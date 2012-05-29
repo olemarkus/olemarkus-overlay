@@ -11,7 +11,7 @@ Random ebuilds I happened to write (or steal)
 Use the following to quick-install
 
 ```
-layman -o https://barelysufficient.org/~olemarkus/layman.xml -a olemarkus-overlay
+layman -o https://barelysufficient.org/~olemarkus/layman.xml -fa olemarkus-overlay
 ```
 
 OR, a more permanent solution, add
