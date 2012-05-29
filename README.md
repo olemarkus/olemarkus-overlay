@@ -3,11 +3,6 @@ olemarkus-overlay
 
 Random ebuilds I happened to write (or steal)
 
-olemarkus-overlay
-=================
-
-Random ebuilds I happened to write (or steal)
-
 Use the following to quick-install
 
 ```
