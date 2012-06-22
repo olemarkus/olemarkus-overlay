@@ -1,0 +1,5680 @@
+Index: src/http/ngx_http_spdy.h
+===================================================================
+--- src/http/ngx_http_spdy.h	(revision 0)
++++ src/http/ngx_http_spdy.h	(revision 0)
+@@ -0,0 +1,143 @@
++/*
++ * Copyright (C) Nginx, Inc.
++ * Copyright (C) Valentin V. Bartenev
++ */
++
++
++#ifndef _NGX_HTTP_SPDY_H_INCLUDED_
++#define _NGX_HTTP_SPDY_H_INCLUDED_
++
++
++#include <ngx_config.h>
++#include <ngx_core.h>
++#include <ngx_http.h>
++
++#include <zlib.h>
++
++#define NGX_SPDY_VERSION            2
++
++#define NGX_SPDY_STATE_BUFFER_SIZE  9
++
++
++typedef struct ngx_http_spdy_connection_s   ngx_http_spdy_connection_t;
++typedef struct ngx_http_spdy_frame_chain_s  ngx_http_spdy_frame_chain_t;
++typedef struct ngx_http_spdy_stream_s       ngx_http_spdy_stream_t;
++
++typedef ngx_int_t (*ngx_http_spdy_handler_pt) (ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++
++struct ngx_http_spdy_connection_s {
++    ngx_connection_t                *connection;
++    ngx_http_request_t              *default_request;
++    ngx_uint_t                       processing;
++
++    u_char                           buffer[NGX_SPDY_STATE_BUFFER_SIZE];
++    size_t                           buffer_used;
++    ngx_http_spdy_handler_pt         handler;
++
++    z_stream                         zstream_in;
++    z_stream                         zstream_out;
++
++    ngx_http_spdy_frame_chain_t     *free_ctrl_frames;
++
++    ngx_http_spdy_stream_t         **streams_index;
++
++    ngx_connection_t                *fake_connections;
++
++    ngx_chain_t                     *out;
++    ngx_http_spdy_frame_chain_t     *out_frames;
++
++    ngx_http_spdy_stream_t          *stream;
++
++    ngx_uint_t                       headers;
++    size_t                           length;
++    u_char                           flags;
++
++    unsigned                         active:1;
++    unsigned                         waiting:1;
++    unsigned                         out_incomplete:1;
++};
++
++struct ngx_http_spdy_frame_chain_s {
++    size_t                           size;
++    ngx_chain_t                     *first;
++    ngx_chain_t                     *last;
++    ngx_http_request_t              *request;
++    ngx_http_spdy_frame_chain_t     *next;
++};
++
++
++struct ngx_http_spdy_stream_s {
++    ngx_uint_t                       id;
++    ngx_http_request_t              *request;
++    ngx_http_spdy_stream_t          *index;
++    ngx_http_spdy_stream_t          *next;
++    ngx_http_spdy_connection_t      *connection;
++
++    ngx_uint_t                       header_buffers;
++
++    unsigned                         priority:2;
++    unsigned                         half_closed:1;
++};
++
++
++void ngx_http_init_spdy(ngx_event_t *rev);
++void ngx_http_spdy_finalize_request(ngx_http_request_t *r, ngx_int_t rc);
++
++ngx_int_t ngx_http_spdy_alloc_recv_buffer(ngx_cycle_t *cycle);
++
++ngx_int_t ngx_http_spdy_init_request_body(ngx_http_request_t *r);
++
++void ngx_http_spdy_append_frame(ngx_http_spdy_connection_t *sc,
++    ngx_http_spdy_frame_chain_t *frame);
++
++void ngx_http_spdy_filter_free_data_frame(ngx_http_spdy_frame_chain_t *frame);
++
++
++#define NGX_SPDY_FLAG_FIN             0x01
++#define NGX_SPDY_FLAG_UNIDIRECTIONAL  0x02
++
++
++#if (NGX_HAVE_NONALIGNED)
++
++#if (NGX_HAVE_LITTLE_ENDIAN)
++#define ngx_http_spdy_detect(p)  ((*(uint32_t *) p << 8) == 0x00028000)
++#else
++#define ngx_http_spdy_detect(p)  ((*(uint32_t *) p >> 8) == 0x00800200)
++#endif
++
++#define ngx_spdy_frame_write_uint16(p, s)                                     \
++    (*(uint16_t *) (p) = htons(s), (p) + 2)
++
++#define ngx_spdy_frame_write_uint32(p, s)                                     \
++    (*(uint32_t *) (p) = htonl(s), (p) + 4)
++
++#define ngx_spdy_frame_write_len(p, s)                                        \
++    (*(uint32_t *) (p) = htonl(((s) << 8) | (p)[3]), (p) + 3)
++
++#define ngx_spdy_frame_write_len_unsafe(p, s)                                 \
++    (*(uint32_t *) (p) = htonl((s) << 8), (p) + 3)
++
++#else
++
++#define ngx_http_spdy_detect(p)  (p[0] == 0x80 && p[1] == 0x02 && p[2] == 0x00)
++
++#define ngx_spdy_frame_write_uint16(p, s)                                     \
++    ((p)[0] = (u_char) (s) >> 8, (p)[1] = (u_char) (s), (p) + 2)
++
++#define ngx_spdy_frame_write_uint32(p, s)                                     \
++    ((p)[0] = (u_char) (s) >> 24,                                             \
++    (p)[1] = (u_char) (s) >> 16,                                              \
++    (p)[2] = (u_char) (s) >> 8,                                               \
++    (p)[3] = (u_char) (s), (p) + 4)
++
++#define ngx_spdy_frame_write_len(p, s)                                        \
++    ((p)[0] = (u_char) ((s) >> 16),                                           \
++    (p)[1] = (u_char) ((s) >> 8),                                             \
++    (p)[2] = (u_char) (s), (p) + 3)
++
++#define ngx_spdy_frame_write_len_unsafe ngx_spdy_frame_write_len
++
++#endif
++
++#endif /* _NGX_HTTP_SPDY_H_INCLUDED_ */
+Index: src/http/ngx_http.h
+===================================================================
+--- src/http/ngx_http.h	(revision 4681)
++++ src/http/ngx_http.h	(working copy)
+@@ -23,7 +23,11 @@ typedef ngx_int_t (*ngx_http_header_handler_pt)(ng
+     ngx_table_elt_t *h, ngx_uint_t offset);
+ typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
+     ngx_http_request_t *sr, u_char *buf, size_t len);
++typedef void (*ngx_http_client_body_handler_pt)(ngx_http_request_t *r);
+ 
++#if (NGX_HTTP_SPDY)
++#include <ngx_http_spdy.h>
++#endif
+ 
+ #include <ngx_http_variables.h>
+ #include <ngx_http_request.h>
+@@ -34,6 +38,10 @@ typedef u_char *(*ngx_http_log_handler_pt)(ngx_htt
+ #include <ngx_http_script.h>
+ #include <ngx_http_core_module.h>
+ 
++#if (NGX_HTTP_SPDY)
++#include <ngx_http_spdy_module.h>
++#endif
++
+ #if (NGX_HTTP_CACHE)
+ #include <ngx_http_cache.h>
+ #endif
+@@ -78,6 +86,7 @@ int ngx_http_ssl_servername(ngx_ssl_conn_t *ssl_co
+ #endif
+ 
+ ngx_int_t ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b);
++ngx_int_t ngx_http_parse_uri(ngx_http_request_t *r);
+ ngx_int_t ngx_http_parse_complex_uri(ngx_http_request_t *r,
+     ngx_uint_t merge_slashes);
+ ngx_int_t ngx_http_parse_status_line(ngx_http_request_t *r, ngx_buf_t *b,
+@@ -94,6 +103,7 @@ void ngx_http_split_args(ngx_http_request_t *r, ng
+     ngx_str_t *args);
+ 
+ 
++ngx_int_t ngx_http_process_request_header(ngx_http_request_t *r);
+ ngx_int_t ngx_http_find_server_conf(ngx_http_request_t *r);
+ void ngx_http_update_location_config(ngx_http_request_t *r);
+ void ngx_http_handler(ngx_http_request_t *r);
+@@ -101,6 +111,7 @@ void ngx_http_run_posted_requests(ngx_connection_t
+ ngx_int_t ngx_http_post_request(ngx_http_request_t *r,
+     ngx_http_posted_request_t *pr);
+ void ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc);
++void ngx_http_log_request(ngx_http_request_t *r);
+ 
+ void ngx_http_empty_handler(ngx_event_t *wev);
+ void ngx_http_request_empty_handler(ngx_http_request_t *r);
+Index: src/http/ngx_http_parse.c
+===================================================================
+--- src/http/ngx_http_parse.c	(revision 4681)
++++ src/http/ngx_http_parse.c	(working copy)
+@@ -1075,6 +1075,154 @@ header_done:
+ 
+ 
+ ngx_int_t
++ngx_http_parse_uri(ngx_http_request_t *r)
++{
++    u_char  *p, ch;
++    enum {
++        sw_start = 0,
++        sw_after_slash_in_uri,
++        sw_check_uri,
++        sw_uri
++    } state;
++
++    state = sw_start;
++
++    for (p = r->uri_start; p != r->uri_end; p++) {
++
++        ch = *p;
++
++        switch (state) {
++
++        case sw_start:
++
++            if (ch != '/') {
++                return NGX_ERROR;
++            }
++
++            state = sw_after_slash_in_uri;
++            break;
++
++        /* check "/.", "//", "%", and "\" (Win32) in URI */
++        case sw_after_slash_in_uri:
++
++            if (usual[ch >> 5] & (1 << (ch & 0x1f))) {
++                state = sw_check_uri;
++                break;
++            }
++
++            switch (ch) {
++            case ' ':
++                r->space_in_uri = 1;
++                state = sw_check_uri;
++                break;
++            case '.':
++                r->complex_uri = 1;
++                state = sw_uri;
++                break;
++            case '%':
++                r->quoted_uri = 1;
++                state = sw_uri;
++                break;
++            case '/':
++                r->complex_uri = 1;
++                state = sw_uri;
++                break;
++#if (NGX_WIN32)
++            case '\\':
++                r->complex_uri = 1;
++                state = sw_uri;
++                break;
++#endif
++            case '?':
++                r->args_start = p + 1;
++                state = sw_uri;
++                break;
++            case '#':
++                r->complex_uri = 1;
++                state = sw_uri;
++                break;
++            case '+':
++                r->plus_in_uri = 1;
++                break;
++            default:
++                state = sw_check_uri;
++                break;
++            }
++            break;
++
++        /* check "/", "%" and "\" (Win32) in URI */
++        case sw_check_uri:
++
++            if (usual[ch >> 5] & (1 << (ch & 0x1f))) {
++                break;
++            }
++
++            switch (ch) {
++            case '/':
++#if (NGX_WIN32)
++                if (r->uri_ext == p) {
++                    r->complex_uri = 1;
++                    state = sw_uri;
++                    break;
++                }
++#endif
++                r->uri_ext = NULL;
++                state = sw_after_slash_in_uri;
++                break;
++            case '.':
++                r->uri_ext = p + 1;
++                break;
++            case ' ':
++                r->space_in_uri = 1;
++                break;
++#if (NGX_WIN32)
++            case '\\':
++                r->complex_uri = 1;
++                state = sw_after_slash_in_uri;
++                break;
++#endif
++            case '%':
++                r->quoted_uri = 1;
++                state = sw_uri;
++                break;
++            case '?':
++                r->args_start = p + 1;
++                state = sw_uri;
++                break;
++            case '#':
++                r->complex_uri = 1;
++                state = sw_uri;
++                break;
++            case '+':
++                r->plus_in_uri = 1;
++                break;
++            }
++            break;
++
++        /* URI */
++        case sw_uri:
++
++            if (usual[ch >> 5] & (1 << (ch & 0x1f))) {
++                break;
++            }
++
++            switch (ch) {
++            case ' ':
++                r->space_in_uri = 1;
++                break;
++            case '#':
++                r->complex_uri = 1;
++                break;
++            }
++            break;
++        }
++    }
++
++    return NGX_OK;
++}
++
++
++ngx_int_t
+ ngx_http_parse_complex_uri(ngx_http_request_t *r, ngx_uint_t merge_slashes)
+ {
+     u_char  c, ch, decoded, *p, *u;
+Index: src/http/modules/ngx_http_ssl_module.c
+===================================================================
+--- src/http/modules/ngx_http_ssl_module.c	(revision 4681)
++++ src/http/modules/ngx_http_ssl_module.c	(working copy)
+@@ -224,6 +224,31 @@ static ngx_http_variable_t  ngx_http_ssl_vars[] =
+ static ngx_str_t ngx_http_ssl_sess_id_ctx = ngx_string("HTTP");
+ 
+ 
++#if (NGX_HTTP_SPDY)
++static int
++ngx_http_ssl_npn_advertised(ngx_ssl_conn_t *ssl, const unsigned char **out,
++    unsigned int *outlen, void *arg)
++{
++    ngx_connection_t    *c;
++    ngx_http_request_t  *r;
++
++    c = ngx_ssl_get_connection(ssl);
++    r = c->data;
++
++    if (r->spdy_stream == NULL) {
++        return SSL_TLSEXT_ERR_NOACK;
++    }
++
++    ngx_log_error(NGX_LOG_INFO, c->log, 0, "SSL NPN ADVERT");
++
++    *out = (unsigned char *) "\006spdy/2\010http/1.1";
++    *outlen = sizeof("\006spdy/2\010http/1.1") - 1;
++
++    return SSL_TLSEXT_ERR_OK;
++}
++#endif
++
++
+ static ngx_int_t
+ ngx_http_ssl_static_variable(ngx_http_request_t *r,
+     ngx_http_variable_value_t *v, uintptr_t data)
+@@ -440,6 +465,11 @@ ngx_http_ssl_merge_srv_conf(ngx_conf_t *cf, void *
+ 
+ #endif
+ 
++#if (NGX_HTTP_SPDY)
++    SSL_CTX_set_next_protos_advertised_cb(conf->ssl.ctx,
++                                          ngx_http_ssl_npn_advertised, NULL);
++#endif
++
+     cln = ngx_pool_cleanup_add(cf->pool, 0);
+     if (cln == NULL) {
+         return NGX_CONF_ERROR;
+Index: src/http/modules/ngx_http_limit_req_module.c
+===================================================================
+--- src/http/modules/ngx_http_limit_req_module.c	(revision 4681)
++++ src/http/modules/ngx_http_limit_req_module.c	(working copy)
+@@ -56,7 +56,8 @@ typedef struct {
+ } ngx_http_limit_req_conf_t;
+ 
+ 
+-static void ngx_http_limit_req_delay(ngx_http_request_t *r);
++static void ngx_http_limit_req_delay(ngx_event_t *ev);
++static void ngx_http_limit_req_delay_cleanup(void *data);
+ static ngx_int_t ngx_http_limit_req_lookup(ngx_http_limit_req_limit_t *limit,
+     ngx_uint_t hash, u_char *data, size_t len, ngx_uint_t *ep,
+     ngx_uint_t account);
+@@ -150,6 +151,8 @@ ngx_http_limit_req_handler(ngx_http_request_t *r)
+     ngx_int_t                    rc;
+     ngx_uint_t                   n, excess;
+     ngx_msec_t                   delay;
++    ngx_event_t                 *ev;
++    ngx_http_cleanup_t          *cln;
+     ngx_http_variable_value_t   *vv;
+     ngx_http_limit_req_ctx_t    *ctx;
+     ngx_http_limit_req_conf_t   *lrcf;
+@@ -264,48 +267,54 @@ ngx_http_limit_req_handler(ngx_http_request_t *r)
+                   "delaying request, excess: %ui.%03ui, by zone \"%V\"",
+                   excess / 1000, excess % 1000, &limit->shm_zone->shm.name);
+ 
+-    if (ngx_handle_read_event(r->connection->read, 0) != NGX_OK) {
++    cln = ngx_http_cleanup_add(r, sizeof(ngx_event_t));
++    if (cln == NULL) {
+         return NGX_HTTP_INTERNAL_SERVER_ERROR;
+     }
+ 
++    cln->handler = ngx_http_limit_req_delay_cleanup;
++
++    ev = cln->data;
++
++    ngx_memzero(ev, sizeof(ngx_event_t));
++
++    ev->handler = ngx_http_limit_req_delay;
++    ev->data = r;
++    ev->log = r->connection->log;
++
+     r->read_event_handler = ngx_http_test_reading;
+-    r->write_event_handler = ngx_http_limit_req_delay;
+-    ngx_add_timer(r->connection->write, delay);
++    r->write_event_handler = ngx_http_request_empty_handler;
+ 
++    ngx_add_timer(ev, delay);
++
+     return NGX_AGAIN;
+ }
+ 
+ 
+ static void
+-ngx_http_limit_req_delay(ngx_http_request_t *r)
++ngx_http_limit_req_delay(ngx_event_t *ev)
+ {
+-    ngx_event_t  *wev;
++    ngx_http_request_t  *r;
+ 
+-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+-                   "limit_req delay");
++    r = ev->data;
+ 
+-    wev = r->connection->write;
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ev->log, 0, "limit_req delay");
+ 
+-    if (!wev->timedout) {
++    r->read_event_handler = ngx_http_block_reading;
++    r->write_event_handler = ngx_http_core_run_phases;
+ 
+-        if (ngx_handle_write_event(wev, 0) != NGX_OK) {
+-            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+-        }
++    ngx_http_core_run_phases(r);
++}
+ 
+-        return;
+-    }
+ 
+-    wev->timedout = 0;
++static void
++ngx_http_limit_req_delay_cleanup(void *data)
++{
++    ngx_event_t *ev = data;
+ 
+-    if (ngx_handle_read_event(r->connection->read, 0) != NGX_OK) {
+-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+-        return;
++    if (ev->timer_set) {
++        ngx_del_timer(ev);
+     }
+-
+-    r->read_event_handler = ngx_http_block_reading;
+-    r->write_event_handler = ngx_http_core_run_phases;
+-
+-    ngx_http_core_run_phases(r);
+ }
+ 
+ 
+Index: src/http/ngx_http_spdy_module.c
+===================================================================
+--- src/http/ngx_http_spdy_module.c	(revision 0)
++++ src/http/ngx_http_spdy_module.c	(revision 0)
+@@ -0,0 +1,364 @@
++
++/*
++ * Copyright (C) Nginx, Inc.
++ * Copyright (C) Valentin V. Bartenev
++ */
++
++
++#include <ngx_config.h>
++#include <ngx_core.h>
++#include <ngx_http.h>
++
++
++static ngx_int_t ngx_http_spdy_add_variables(ngx_conf_t *cf);
++
++static ngx_int_t ngx_http_spdy_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_spdy_request_priority_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data);
++
++static void *ngx_http_spdy_create_main_conf(ngx_conf_t *cf);
++static char *ngx_http_spdy_init_main_conf(ngx_conf_t *cf, void *conf);
++
++static void *ngx_http_spdy_create_srv_conf(ngx_conf_t *cf);
++static char *ngx_http_spdy_merge_srv_conf(ngx_conf_t *cf, void *parent,
++    void *child);
++
++static char *ngx_http_spdy_streams_index_mask(ngx_conf_t *cf, void *post,
++    void *data);
++static char *ngx_http_spdy_headers_comp_window(ngx_conf_t *cf, void *post,
++    void *data);
++static char *ngx_http_spdy_headers_comp_hash(ngx_conf_t *cf, void *post,
++    void *data);
++
++
++static ngx_conf_num_bounds_t  ngx_http_spdy_headers_comp_bounds = {
++    ngx_conf_check_num_bounds, 0, 9
++};
++
++
++static ngx_conf_post_handler_pt
++    ngx_http_spdy_streams_index_mask_p = ngx_http_spdy_streams_index_mask;
++static ngx_conf_post_handler_pt
++    ngx_http_spdy_headers_comp_window_p = ngx_http_spdy_headers_comp_window;
++static ngx_conf_post_handler_pt
++    ngx_http_spdy_headers_comp_hash_p = ngx_http_spdy_headers_comp_hash;
++
++
++static ngx_command_t  ngx_http_spdy_commands[] = {
++
++    { ngx_string("spdy_recv_buffer_size"),
++      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_size_slot,
++      NGX_HTTP_MAIN_CONF_OFFSET,
++      offsetof(ngx_http_spdy_main_conf_t, recv_buffer_size),
++      NULL },
++
++    { ngx_string("spdy_max_concurrent_streams"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, concurrent_streams),
++      NULL },
++
++    { ngx_string("spdy_streams_index_size"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, streams_index_mask),
++      &ngx_http_spdy_streams_index_mask_p },
++
++    { ngx_string("spdy_recv_timeout"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_msec_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, recv_timeout),
++      NULL },
++
++    { ngx_string("spdy_keepalive_timeout"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_msec_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, keepalive_timeout),
++      NULL },
++
++    { ngx_string("spdy_headers_comp"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, headers_comp),
++      &ngx_http_spdy_headers_comp_bounds },
++
++    { ngx_string("spdy_headers_comp_window"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_size_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, headers_comp_wbits),
++      &ngx_http_spdy_headers_comp_window_p },
++
++    { ngx_string("spdy_headers_comp_hash"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_size_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_spdy_srv_conf_t, headers_comp_memlevel),
++      &ngx_http_spdy_headers_comp_hash_p },
++
++      ngx_null_command
++};
++
++
++static ngx_http_module_t  ngx_http_spdy_module_ctx = {
++    ngx_http_spdy_add_variables,           /* preconfiguration */
++    NULL,                                  /* postconfiguration */
++
++    ngx_http_spdy_create_main_conf,        /* create main configuration */
++    ngx_http_spdy_init_main_conf,          /* init main configuration */
++
++    ngx_http_spdy_create_srv_conf,         /* create server configuration */
++    ngx_http_spdy_merge_srv_conf,          /* merge server configuration */
++
++    NULL,                                  /* create location configuration */
++    NULL                                   /* merge location configuration */
++};
++
++
++ngx_module_t  ngx_http_spdy_module = {
++    NGX_MODULE_V1,
++    &ngx_http_spdy_module_ctx,             /* module context */
++    ngx_http_spdy_commands,                /* module directives */
++    NGX_HTTP_MODULE,                       /* module type */
++    NULL,                                  /* init master */
++    NULL,                                  /* init module */
++    ngx_http_spdy_alloc_recv_buffer,       /* init process */
++    NULL,                                  /* init thread */
++    NULL,                                  /* exit thread */
++    NULL,                                  /* exit process */
++    NULL,                                  /* exit master */
++    NGX_MODULE_V1_PADDING
++};
++
++
++static ngx_http_variable_t  ngx_http_spdy_vars[] = {
++
++    { ngx_string("spdy"), NULL,
++      ngx_http_spdy_variable, 0, 0, 0 },
++
++    { ngx_string("spdy_request_priority"), NULL,
++      ngx_http_spdy_request_priority_variable, 0, 0, 0 },
++
++    { ngx_null_string, NULL, NULL, 0, 0, 0 }
++};
++
++
++static ngx_int_t
++ngx_http_spdy_add_variables(ngx_conf_t *cf)
++{
++   ngx_http_variable_t  *var, *v;
++
++    for (v = ngx_http_spdy_vars; v->name.len; v++) {
++        var = ngx_http_add_variable(cf, &v->name, v->flags);
++        if (var == NULL) {
++            return NGX_ERROR;
++        }
++
++        var->get_handler = v->get_handler;
++        var->data = v->data;
++    }
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    if (r->spdy_stream) {
++        v->len = 1;
++        v->valid = 1;
++        v->no_cacheable = 0;
++        v->not_found = 0;
++        v->data = (u_char *) "2";
++
++        return NGX_OK;
++    }
++
++    *v = ngx_http_variable_null_value;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_request_priority_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    if (r->spdy_stream) {
++        v->len = 1;
++        v->valid = 1;
++        v->no_cacheable = 0;
++        v->not_found = 0;
++
++        v->data = ngx_pnalloc(r->pool, 1);
++        if (v->data == NULL) {
++            return NGX_ERROR;
++        }
++
++        v->data[0] = r->spdy_stream->priority | 0x30;
++
++        return NGX_OK;
++    }
++
++    *v = ngx_http_variable_null_value;
++
++    return NGX_OK;
++}
++
++
++static void *
++ngx_http_spdy_create_main_conf(ngx_conf_t *cf)
++{
++    ngx_http_spdy_main_conf_t  *smcf;
++
++    smcf = ngx_pcalloc(cf->pool, sizeof(ngx_http_spdy_main_conf_t));
++    if (smcf == NULL) {
++        return NULL;
++    }
++
++    smcf->recv_buffer_size = NGX_CONF_UNSET_SIZE;
++
++    return smcf;
++}
++
++
++static char *
++ngx_http_spdy_init_main_conf(ngx_conf_t *cf, void *conf)
++{
++    ngx_http_spdy_main_conf_t *smcf = conf;
++
++    if (smcf->recv_buffer_size == NGX_CONF_UNSET_SIZE) {
++        smcf->recv_buffer_size = 1024 * 1024;
++    }
++
++    return NGX_CONF_OK;
++}
++
++
++static void *
++ngx_http_spdy_create_srv_conf(ngx_conf_t *cf)
++{
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    sscf = ngx_pcalloc(cf->pool, sizeof(ngx_http_spdy_srv_conf_t));
++    if (sscf == NULL) {
++        return NULL;
++    }
++
++    sscf->concurrent_streams = NGX_CONF_UNSET_UINT;
++    sscf->streams_index_mask = NGX_CONF_UNSET_UINT;
++
++    sscf->recv_timeout = NGX_CONF_UNSET_MSEC;
++    sscf->keepalive_timeout = NGX_CONF_UNSET_MSEC;
++
++    sscf->headers_comp = NGX_CONF_UNSET;
++    sscf->headers_comp_wbits = NGX_CONF_UNSET_SIZE;
++    sscf->headers_comp_memlevel = NGX_CONF_UNSET_SIZE;
++
++    return sscf;
++}
++
++
++static char *
++ngx_http_spdy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
++{
++    ngx_http_spdy_srv_conf_t *prev = parent;
++    ngx_http_spdy_srv_conf_t *conf = child;
++
++    ngx_conf_merge_uint_value(conf->concurrent_streams,
++                              prev->concurrent_streams, 100);
++
++    ngx_conf_merge_uint_value(conf->streams_index_mask,
++                              prev->streams_index_mask, 32 - 1);
++
++    ngx_conf_merge_msec_value(conf->recv_timeout,
++                              prev->recv_timeout, 30000);
++    ngx_conf_merge_msec_value(conf->keepalive_timeout,
++                              prev->keepalive_timeout, 180000);
++
++    ngx_conf_merge_value(conf->headers_comp, prev->headers_comp, 1);
++    ngx_conf_merge_size_value(conf->headers_comp_wbits,
++                              prev->headers_comp_wbits,
++                              ngx_min(11, MAX_WBITS));
++    ngx_conf_merge_size_value(conf->headers_comp_memlevel,
++                              prev->headers_comp_memlevel,
++                              ngx_min(4, MAX_MEM_LEVEL));
++
++    return NGX_CONF_OK;
++}
++
++
++static char *
++ngx_http_spdy_headers_comp_window(ngx_conf_t *cf, void *post, void *data)
++{
++    size_t *np = data;
++
++    size_t  wbits, wsize;
++
++    wbits = 15;
++
++    for (wsize = 32 * 1024; wsize > 128; wsize >>= 1) {
++
++        if (wsize == *np) {
++            *np = wbits;
++
++            return NGX_CONF_OK;
++        }
++
++        wbits--;
++    }
++
++    return "must be 256, 512, 1k, 2k, 4k, 8k, 16k, or 32k";
++}
++
++
++static char *
++ngx_http_spdy_streams_index_mask(ngx_conf_t *cf, void *post, void *data)
++{
++    ngx_uint_t *np = data;
++
++    ngx_uint_t  mask;
++
++    mask = *np - 1;
++
++    if (*np & mask) {
++        return "must be a power of two";
++    }
++
++    *np = mask;
++
++    return NGX_CONF_OK;
++}
++
++
++static char *
++ngx_http_spdy_headers_comp_hash(ngx_conf_t *cf, void *post, void *data)
++{
++    size_t *np = data;
++
++    size_t  memlevel, hsize;
++
++    memlevel = 9;
++
++    for (hsize = 128 * 1024; hsize > 256; hsize >>= 1) {
++
++        if (hsize == *np) {
++            *np = memlevel;
++
++            return NGX_CONF_OK;
++        }
++
++        memlevel--;
++    }
++
++    return "must be 512, 1k, 2k, 4k, 8k, 16k, 32k, 64k, or 128k";
++}
+Index: src/http/ngx_http_request.c
+===================================================================
+--- src/http/ngx_http_request.c	(revision 4681)
++++ src/http/ngx_http_request.c	(working copy)
+@@ -30,7 +30,6 @@ static ngx_int_t ngx_http_process_user_agent(ngx_h
+ static ngx_int_t ngx_http_process_cookie(ngx_http_request_t *r,
+     ngx_table_elt_t *h, ngx_uint_t offset);
+ 
+-static ngx_int_t ngx_http_process_request_header(ngx_http_request_t *r);
+ static void ngx_http_process_request(ngx_http_request_t *r);
+ static ssize_t ngx_http_validate_host(ngx_http_request_t *r, u_char **host,
+     size_t len, ngx_uint_t alloc);
+@@ -52,7 +51,6 @@ static void ngx_http_lingering_close_handler(ngx_e
+ static ngx_int_t ngx_http_post_action(ngx_http_request_t *r);
+ static void ngx_http_close_request(ngx_http_request_t *r, ngx_int_t error);
+ static void ngx_http_free_request(ngx_http_request_t *r, ngx_int_t error);
+-static void ngx_http_log_request(ngx_http_request_t *r);
+ static void ngx_http_close_connection(ngx_connection_t *c);
+ 
+ static u_char *ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len);
+@@ -415,7 +413,13 @@ ngx_http_init_request(ngx_event_t *rev)
+                 return;
+             }
+ 
+-            if (ngx_ssl_create_connection(&sscf->ssl, c, NGX_SSL_BUFFER)
++#if (NGX_HTTP_SPDY)
++            if (addr_conf->spdy) {
++                r->spdy_stream = (void *) 1; //FIXME
++            }
++#endif
++
++            if (ngx_ssl_create_connection(&sscf->ssl, c, 0) // NGX_SSL_BUFFER) FIXME
+                 != NGX_OK)
+             {
+                 ngx_http_close_connection(c);
+@@ -588,6 +592,10 @@ ngx_http_ssl_handshake(ngx_event_t *rev)
+         }
+     }
+ 
++#if (NGX_HTTP_SPDY)
++    r->spdy_stream = NULL; //FIXME
++#endif
++
+     c->log->action = "reading client request line";
+ 
+     rev->handler = ngx_http_process_request_line;
+@@ -600,6 +608,12 @@ ngx_http_ssl_handshake_handler(ngx_connection_t *c
+ {
+     ngx_http_request_t  *r;
+ 
++    r = c->data;
++
++#if (NGX_HTTP_SPDY)
++    r->spdy_stream = NULL; //FIXME
++#endif
++
+     if (c->ssl->handshaked) {
+ 
+         /*
+@@ -612,6 +626,29 @@ ngx_http_ssl_handshake_handler(ngx_connection_t *c
+ 
+         c->ssl->no_wait_shutdown = 1;
+ 
++#if (NGX_HTTP_SPDY)
++        {
++        unsigned       len;
++        const u_char  *data;
++
++        SSL_get0_next_proto_negotiated(c->ssl->connection, &data, &len);
++
++        if (len == sizeof("spdy/2") - 1
++            && ngx_memcmp(data, "spdy/2", sizeof("spdy/2") - 1) == 0)
++        {
++
++#if (NGX_STAT_STUB)
++            (void) ngx_atomic_fetch_add(ngx_stat_reading, -1);
++            (void) ngx_atomic_fetch_add(ngx_stat_requests, -1);
++#endif
++
++            c->data = c; //FIXME
++            ngx_http_init_spdy(c->read);
++            return;
++        }
++        }
++#endif
++
+         c->log->action = "reading client request line";
+ 
+         c->read->handler = ngx_http_process_request_line;
+@@ -622,8 +659,6 @@ ngx_http_ssl_handshake_handler(ngx_connection_t *c
+         return;
+     }
+ 
+-    r = c->data;
+-
+     ngx_http_close_request(r, NGX_HTTP_BAD_REQUEST);
+ 
+     return;
+@@ -969,7 +1004,7 @@ ngx_http_process_request_line(ngx_event_t *rev)
+ }
+ 
+ 
+-static void
++void
+ ngx_http_process_request_headers(ngx_event_t *rev)
+ {
+     u_char                     *p;
+@@ -1543,7 +1578,7 @@ ngx_http_process_cookie(ngx_http_request_t *r, ngx
+ }
+ 
+ 
+-static ngx_int_t
++ngx_int_t
+ ngx_http_process_request_header(ngx_http_request_t *r)
+ {
+     if (ngx_http_find_virtual_server(r, r->headers_in.server.data,
+@@ -1936,6 +1971,11 @@ ngx_http_finalize_request(ngx_http_request_t *r, n
+     ngx_http_request_t        *pr;
+     ngx_http_core_loc_conf_t  *clcf;
+ 
++    if (r->spdy_stream) {
++        ngx_http_spdy_finalize_request(r, rc);
++        return;
++    }
++
+     c = r->connection;
+ 
+     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, c->log, 0,
+@@ -3069,7 +3109,7 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_i
+ }
+ 
+ 
+-static void
++void
+ ngx_http_log_request(ngx_http_request_t *r)
+ {
+     ngx_uint_t                  i, n;
+Index: src/http/ngx_http_spdy_module.h
+===================================================================
+--- src/http/ngx_http_spdy_module.h	(revision 0)
++++ src/http/ngx_http_spdy_module.h	(revision 0)
+@@ -0,0 +1,37 @@
++
++/*
++ * Copyright (C) Nginx, Inc.
++ * Copyright (C) Valentin V. Bartenev
++ */
++
++
++#ifndef _NGX_HTTP_SPDY_MODULE_H_INCLUDED_
++#define _NGX_HTTP_SPDY_MODULE_H_INCLUDED_
++
++
++#include <ngx_config.h>
++#include <ngx_core.h>
++#include <ngx_http.h>
++
++
++typedef struct {
++    ngx_flag_t                      enable;
++    size_t                          recv_buffer_size;
++} ngx_http_spdy_main_conf_t;
++
++
++typedef struct {
++    ngx_uint_t                      concurrent_streams;
++    ngx_uint_t                      streams_index_mask;
++    ngx_msec_t                      recv_timeout;
++    ngx_msec_t                      keepalive_timeout;
++    ngx_int_t                       headers_comp;
++    size_t                          headers_comp_wbits;
++    size_t                          headers_comp_memlevel;
++} ngx_http_spdy_srv_conf_t;
++
++
++extern ngx_module_t  ngx_http_spdy_module;
++
++
++#endif /* _NGX_HTTP_SPDY_MODULE_H_INCLUDED_ */
+Index: src/http/ngx_http_spdy_filter_module.c
+===================================================================
+--- src/http/ngx_http_spdy_filter_module.c	(revision 0)
++++ src/http/ngx_http_spdy_filter_module.c	(revision 0)
+@@ -0,0 +1,821 @@
++
++/*
++ * Copyright (C) Nginx, Inc.
++ * Copyright (C) Valentin V. Bartenev
++ */
++
++
++#include <ngx_config.h>
++#include <ngx_core.h>
++#include <ngx_http.h>
++#include <nginx.h>
++
++#include <zlib.h>
++
++
++#define NGX_SPDY_WRITE_BUFFERED  NGX_HTTP_WRITE_BUFFERED
++
++#define ngx_http_spdy_header_sizeof(h)  (2 + sizeof(h) - 1)
++
++#define ngx_http_spdy_header_write(p, h)                                      \
++    ngx_cpymem(ngx_spdy_frame_write_uint16(p, sizeof(h) - 1), h, sizeof(h) - 1)
++
++
++typedef struct {
++    ngx_uint_t                    waiting;
++    ngx_http_spdy_frame_chain_t  *free_frames;
++    ngx_http_spdy_frame_chain_t  *free_data_frames;
++} ngx_http_spdy_filter_ctx_t;
++
++
++static ngx_http_spdy_frame_chain_t *ngx_http_spdy_filter_create_data_frame(
++    ngx_http_request_t *r, ngx_uint_t len, ngx_uint_t last);
++static ngx_http_spdy_frame_chain_t *ngx_http_spdy_filter_create_sync_frame(
++    ngx_http_request_t *r);
++
++static ngx_int_t ngx_http_spdy_filter_init(ngx_conf_t *cf);
++
++
++static ngx_http_module_t  ngx_http_spdy_filter_module_ctx = {
++    NULL,                                  /* preconfiguration */
++    ngx_http_spdy_filter_init,             /* postconfiguration */
++
++    NULL,                                  /* create main configuration */
++    NULL,                                  /* init main configuration */
++
++    NULL,                                  /* create server configuration */
++    NULL,                                  /* merge server configuration */
++
++    NULL,                                  /* create location configuration */
++    NULL                                   /* merge location configuration */
++};
++
++
++ngx_module_t  ngx_http_spdy_filter_module = {
++    NGX_MODULE_V1,
++    &ngx_http_spdy_filter_module_ctx,      /* module context */
++    NULL,                                  /* module directives */
++    NGX_HTTP_MODULE,                       /* module type */
++    NULL,                                  /* init master */
++    NULL,                                  /* init module */
++    NULL,                                  /* init process */
++    NULL,                                  /* init thread */
++    NULL,                                  /* exit thread */
++    NULL,                                  /* exit process */
++    NULL,                                  /* exit master */
++    NGX_MODULE_V1_PADDING
++};
++
++
++static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
++static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
++
++
++static ngx_int_t
++ngx_http_spdy_header_filter(ngx_http_request_t *r)
++{
++    int                           rc;
++    size_t                        len;
++    u_char                       *p;
++    ngx_buf_t                    *b, *hb;
++    ngx_str_t                     host;
++    ngx_uint_t                    i, j, count, port;
++    ngx_chain_t                  *cl;
++    ngx_list_part_t              *part, *pt;
++    ngx_table_elt_t              *header, *h;
++    ngx_connection_t             *c;
++    ngx_http_core_loc_conf_t     *clcf;
++    ngx_http_core_srv_conf_t     *cscf;
++    ngx_http_spdy_filter_ctx_t   *ctx;
++    ngx_http_spdy_connection_t   *sc;
++    ngx_http_spdy_frame_chain_t  *frame;
++    struct sockaddr_in           *sin;
++#if (NGX_HAVE_INET6)
++    struct sockaddr_in6          *sin6;
++#endif
++    u_char                        addr[NGX_SOCKADDR_STRLEN];
++
++    if (!r->spdy_stream) {
++        return ngx_http_next_header_filter(r);
++    }
++
++    if (r->header_sent) {
++        return NGX_OK;
++    }
++
++    r->header_sent = 1;
++
++    if (r != r->main) {
++        return NGX_OK;
++    }
++
++    c = r->connection;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "spdy header filter");
++
++    if (r->method == NGX_HTTP_HEAD) {
++        r->header_only = 1;
++    }
++
++    if (r->headers_out.last_modified_time != -1) {
++        if (r->headers_out.status != NGX_HTTP_OK
++            && r->headers_out.status != NGX_HTTP_PARTIAL_CONTENT
++            && r->headers_out.status != NGX_HTTP_NOT_MODIFIED)
++        {
++            r->headers_out.last_modified_time = -1;
++            r->headers_out.last_modified = NULL;
++        }
++    }
++
++    len = 8 + 6 + 2
++          + ngx_http_spdy_header_sizeof("version")
++          + ngx_http_spdy_header_sizeof("HTTP/1.x")
++          + ngx_http_spdy_header_sizeof("status")
++          + ngx_http_spdy_header_sizeof("xxx");
++
++    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
++
++    if (r->headers_out.server == NULL) {
++        len += ngx_http_spdy_header_sizeof("server");
++        len += clcf->server_tokens ? ngx_http_spdy_header_sizeof(NGINX_VER):
++                                     ngx_http_spdy_header_sizeof("nginx");
++    }
++
++    if (r->headers_out.date == NULL) {
++        len += ngx_http_spdy_header_sizeof("date")
++               + ngx_http_spdy_header_sizeof("Wed, 31 Dec 1986 10:00:00 GMT");
++    }
++
++    if (r->headers_out.content_type.len) {
++        len += ngx_http_spdy_header_sizeof("content-type")
++               + 2 + r->headers_out.content_type.len;
++
++        if (r->headers_out.content_type_len == r->headers_out.content_type.len
++            && r->headers_out.charset.len)
++        {
++            len += sizeof("; charset=") - 1 + r->headers_out.charset.len;
++        }
++    }
++
++    if (r->headers_out.content_length == NULL
++        && r->headers_out.content_length_n >= 0)
++    {
++        len += ngx_http_spdy_header_sizeof("content-length")
++               + 2 + NGX_OFF_T_LEN;
++    }
++
++    if (r->headers_out.last_modified == NULL
++        && r->headers_out.last_modified_time != -1)
++    {
++        len += ngx_http_spdy_header_sizeof("last-modified")
++               + ngx_http_spdy_header_sizeof("Wed, 31 Dec 1986 10:00:00 GMT");
++    }
++
++    if (r->headers_out.location
++        && r->headers_out.location->value.len
++        && r->headers_out.location->value.data[0] == '/')
++    {
++        r->headers_out.location->hash = 0;
++
++        if (clcf->server_name_in_redirect) {
++            cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
++            host = cscf->server_name;
++
++        } else if (r->headers_in.server.len) {
++            host = r->headers_in.server;
++
++        } else {
++            host.len = NGX_SOCKADDR_STRLEN;
++            host.data = addr;
++
++            if (ngx_connection_local_sockaddr(c, &host, 0) != NGX_OK) {
++                return NGX_ERROR;
++            }
++        }
++
++        switch (c->local_sockaddr->sa_family) {
++
++#if (NGX_HAVE_INET6)
++        case AF_INET6:
++            sin6 = (struct sockaddr_in6 *) c->local_sockaddr;
++            port = ntohs(sin6->sin6_port);
++            break;
++#endif
++#if (NGX_HAVE_UNIX_DOMAIN)
++        case AF_UNIX:
++            port = 0;
++            break;
++#endif
++        default: /* AF_INET */
++            sin = (struct sockaddr_in *) c->local_sockaddr;
++            port = ntohs(sin->sin_port);
++            break;
++        }
++
++        len += ngx_http_spdy_header_sizeof("location")
++               + ngx_http_spdy_header_sizeof("https://")
++               + host.len
++               + r->headers_out.location->value.len;
++
++        if (clcf->port_in_redirect) {
++
++#if (NGX_HTTP_SSL)
++            if (c->ssl)
++                port = (port == 443) ? 0 : port;
++            else
++#endif
++                port = (port == 80) ? 0 : port;
++
++        } else {
++            port = 0;
++        }
++
++        if (port) {
++            len += sizeof(":65535") - 1;
++        }
++
++    } else {
++        ngx_str_null(&host);
++        port = 0;
++    }
++
++    part = &r->headers_out.headers.part;
++    header = part->elts;
++
++    for (i = 0; /* void */; i++) {
++
++        if (i >= part->nelts) {
++            if (part->next == NULL) {
++                break;
++            }
++
++            part = part->next;
++            header = part->elts;
++            i = 0;
++        }
++
++        if (header[i].hash == 0) {
++            continue;
++        }
++
++        len += 2 + header[i].key.len + 2 + header[i].value.len;
++    }
++
++    hb = ngx_create_temp_buf(r->pool, len);
++    if (hb == NULL) {
++        return NGX_ERROR;
++    }
++
++    hb->last = ngx_http_spdy_header_write(hb->last + 2, "version");
++    hb->last = ngx_http_spdy_header_write(hb->last, "HTTP/1.1");
++
++    hb->last = ngx_http_spdy_header_write(hb->last, "status");
++    hb->last = ngx_spdy_frame_write_uint16(hb->last, 3);
++    hb->last = ngx_sprintf(hb->last, "%ui", r->headers_out.status);
++
++    count = 2;
++
++    if (r->headers_out.server == NULL) {
++        hb->last = ngx_http_spdy_header_write(hb->last, "server");
++        hb->last = clcf->server_tokens ?
++                   ngx_http_spdy_header_write(hb->last, NGINX_VER):
++                   ngx_http_spdy_header_write(hb->last, "nginx");
++        count++;
++    }
++
++    if (r->headers_out.date == NULL) {
++        hb->last = ngx_http_spdy_header_write(hb->last, "date");
++
++        hb->last = ngx_spdy_frame_write_uint16(hb->last,
++                                               ngx_cached_http_time.len);
++
++        hb->last = ngx_cpymem(hb->last, ngx_cached_http_time.data,
++                              ngx_cached_http_time.len);
++        count++;
++    }
++
++    if (r->headers_out.content_type.len) {
++
++        hb->last = ngx_http_spdy_header_write(hb->last, "content-type");
++
++        p = hb->last + 2;
++
++        hb->last = ngx_cpymem(p, r->headers_out.content_type.data,
++                              r->headers_out.content_type.len);
++
++        if (r->headers_out.content_type_len == r->headers_out.content_type.len
++            && r->headers_out.charset.len)
++        {
++            hb->last = ngx_cpymem(hb->last, "; charset=",
++                                  sizeof("; charset=") - 1);
++            hb->last = ngx_cpymem(hb->last, r->headers_out.charset.data,
++                                  r->headers_out.charset.len);
++
++            /* update r->headers_out.content_type for possible logging */
++
++            r->headers_out.content_type.len = hb->last - p;
++            r->headers_out.content_type.data = p;
++        }
++
++        (void) ngx_spdy_frame_write_uint16(p - 2,
++                                           r->headers_out.content_type.len);
++
++        count++;
++    }
++
++    if (r->headers_out.content_length == NULL
++        && r->headers_out.content_length_n >= 0)
++    {
++        hb->last = ngx_http_spdy_header_write(hb->last, "content-length");
++
++        p = hb->last + 2;
++
++        hb->last = ngx_sprintf(p, "%O", r->headers_out.content_length_n);
++
++        (void) ngx_spdy_frame_write_uint16(p - 2, hb->last - p);
++
++        count++;
++    }
++
++    if (r->headers_out.last_modified == NULL
++        && r->headers_out.last_modified_time != -1)
++    {
++        hb->last = ngx_http_spdy_header_write(hb->last, "last-modified");
++
++        p = hb->last + 2;
++
++        hb->last = ngx_http_time(p, r->headers_out.last_modified_time);
++
++        (void) ngx_spdy_frame_write_uint16(p - 2, hb->last - p);
++
++        count++;
++    }
++
++    if (host.data) {
++
++        hb->last = ngx_http_spdy_header_write(hb->last, "location");
++
++        p = hb->last + 2;
++
++        hb->last = ngx_cpymem(p, "http", sizeof("http") - 1);
++
++#if (NGX_HTTP_SSL)
++        if (c->ssl) {
++            *hb->last++ ='s';
++        }
++#endif
++
++        *hb->last++ = ':'; *hb->last++ = '/'; *hb->last++ = '/';
++        hb->last = ngx_cpymem(hb->last, host.data, host.len);
++
++        if (port) {
++            hb->last = ngx_sprintf(hb->last, ":%ui", port);
++        }
++
++        hb->last = ngx_cpymem(hb->last, r->headers_out.location->value.data,
++                              r->headers_out.location->value.len);
++
++        /* update r->headers_out.location->value for possible logging */
++
++        r->headers_out.location->value.len = hb->last - p;
++        r->headers_out.location->value.data = p;
++        ngx_str_set(&r->headers_out.location->key, "location");
++
++        (void) ngx_spdy_frame_write_uint16(p - 2, r->headers_out.location->value.len);
++
++        count++;
++    }
++
++    part = &r->headers_out.headers.part;
++    header = part->elts;
++
++    for (i = 0; /* void */; i++) {
++
++        if (i >= part->nelts) {
++            if (part->next == NULL) {
++                break;
++            }
++
++            part = part->next;
++            header = part->elts;
++            i = 0;
++        }
++
++        if (header[i].hash == 0 || header[i].hash == 2) {
++            continue;
++        }
++
++        if ((header[i].key.len == 6
++             && ngx_strncasecmp(header[i].key.data,
++                                (u_char *) "status", 6) == 0)
++            || (header[i].key.len == 7
++                && ngx_strncasecmp(header[i].key.data,
++                                   (u_char *) "version", 7) == 0))
++        {
++            header[i].hash = 0;
++            continue;
++        }
++
++        hb->last = ngx_spdy_frame_write_uint16(hb->last, header[i].key.len);
++
++        ngx_strlow(hb->last, header[i].key.data, header[i].key.len);
++        hb->last += header[i].key.len;
++
++        p = hb->last + 2;
++
++        hb->last = ngx_cpymem(p, header[i].value.data, header[i].value.len);
++
++        pt = part;
++        h = header;
++
++        for (j = i + 1; /* void */; j++) {
++
++            if (j >= pt->nelts) {
++                if (pt->next == NULL) {
++                    break;
++                }
++
++                pt = pt->next;
++                h = pt->elts;
++                j = 0;
++            }
++
++            if (h[j].hash == 0 || h[j].hash == 2
++                || h[j].key.len != header[i].key.len
++                || ngx_strncasecmp(header[i].key.data, h[j].key.data,
++                                   header[i].key.len))
++            {
++                continue;
++            }
++
++            *hb->last++ = '\0';
++
++            hb->last = ngx_cpymem(hb->last, h[j].value.data, h[j].value.len);
++
++            h[j].hash = 2;
++        }
++
++        (void) ngx_spdy_frame_write_uint16(p - 2, hb->last - p);
++
++        count++;
++    }
++
++    (void) ngx_spdy_frame_write_uint16(hb->pos, count);
++
++    /* TODO: better zlib overhead computation */
++    b = ngx_create_temp_buf(r->pool, hb->last - hb->pos + 14 + 15);
++    if (b == NULL) {
++        return NGX_ERROR;
++    }
++
++    b->last += 14;
++
++    sc = r->spdy_stream->connection;
++
++    sc->zstream_out.next_in = hb->pos;
++    sc->zstream_out.avail_in = hb->last - hb->pos;
++    sc->zstream_out.next_out = b->last;
++    sc->zstream_out.avail_out = b->end - b->last;
++
++    rc = deflate(&sc->zstream_out, Z_SYNC_FLUSH); //Z_FINISH);
++
++    if (rc != Z_OK) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "spdy deflate() failed: %d", rc);
++        return NGX_ERROR;
++    }
++
++    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "spdy deflate out: ni:%p no:%p ai:%ud ao:%ud rc:%d",
++                   sc->zstream_out.next_in, sc->zstream_out.next_out,
++                   sc->zstream_out.avail_in, sc->zstream_out.avail_out,
++                   rc);
++
++    b->last = sc->zstream_out.next_out;
++
++    len = b->last - b->pos - 8;
++
++    p = b->pos;
++
++#if (NGX_HAVE_NONALIGNED)
++
++#if (NGX_HAVE_LITTLE_ENDIAN)
++    *(uint32_t *) p = 0x02000280;
++#else
++    *(uint32_t *) p = 0x80020002;
++#endif
++
++#else
++    p[0] = 0x80; p[1] = 0x02; p[2] = 0x00; p[3] = 0x02;
++
++#endif
++
++    if (r->header_only) {
++        b->last_buf = 1;
++        p[4] = 0x01;
++
++    } else {
++        p[4] = 0x00;
++    }
++
++    p = ngx_spdy_frame_write_len_unsafe(p + 5, len);
++
++    (void) ngx_spdy_frame_write_uint32(p, r->spdy_stream->id);
++
++    r->header_size = ngx_buf_size(b); //FIXME
++
++    cl = ngx_alloc_chain_link(r->pool);
++    if (cl == NULL) {
++        return NGX_ERROR;
++    }
++
++    cl->buf = b;
++    cl->next = NULL;
++
++    frame = ngx_palloc(r->pool, sizeof(ngx_http_spdy_frame_chain_t));
++    if (frame == NULL) {
++        return NGX_ERROR;
++    }
++
++    frame->size = r->header_size;
++    frame->first = cl;
++    frame->last = cl;
++    frame->request = r;
++
++    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_spdy_filter_ctx_t));
++    if (ctx == NULL) {
++        return NGX_ERROR;
++    }
++
++    ctx->waiting = 1;
++
++    ngx_http_set_ctx(r, ctx, ngx_http_spdy_filter_module);
++
++    c->buffered |= NGX_SPDY_WRITE_BUFFERED;
++    c->write->delayed = 1;
++
++    ngx_http_spdy_append_frame(sc, frame);
++
++    if (sc->connection->write->ready) {
++        ngx_post_event(sc->connection->write, &ngx_posted_events);
++    }
++
++    return NGX_AGAIN;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
++{
++    off_t                         size;
++    ngx_buf_t                    *b;
++    ngx_uint_t                    last;
++    ngx_chain_t                  *cl, *ll, *out, **ln;
++    ngx_http_spdy_connection_t   *sc;
++    ngx_http_spdy_filter_ctx_t   *ctx;
++    ngx_http_spdy_frame_chain_t  *frame;
++
++    ctx = ngx_http_get_module_ctx(r->main, ngx_http_spdy_filter_module);
++    if (ctx == NULL) {
++        return ngx_http_next_body_filter(r, in);
++    }
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy body filter \"%V?%V\"", &r->uri, &r->args);
++
++    if (in == NULL || r->header_only) {
++ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "SPDY DEBUG WAITED %i", ctx->waiting);
++        if (ctx->waiting) {
++            return NGX_AGAIN;
++        }
++
++        r->connection->buffered &= ~NGX_SPDY_WRITE_BUFFERED;
++
++        return NGX_OK;
++    }
++
++    size = 0;
++    ln = &out;
++    ll = in;
++
++    for ( ;; ) {
++        b = ll->buf;
++#if 1
++        if (ngx_buf_size(b) == 0 && !ngx_buf_special(b)) {
++            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
++                          "zero size buf in spdy body filter "
++                          "t:%d r:%d f:%d %p %p-%p %p %O-%O",
++                          b->temporary,
++                          b->recycled,
++                          b->in_file,
++                          b->start,
++                          b->pos,
++                          b->last,
++                          b->file,
++                          b->file_pos,
++                          b->file_last);
++
++            ngx_debug_point();
++            return NGX_ERROR;
++        }
++#endif
++        cl = ngx_alloc_chain_link(r->pool);
++        if (cl == NULL) {
++            return NGX_ERROR;
++        }
++
++        size += ngx_buf_size(b);
++        cl->buf = b;
++
++        *ln = cl;
++        ln = &cl->next;
++
++        if (ll->next == NULL) {
++            break;
++        }
++
++        ll = ll->next;
++    }
++
++    *ln = NULL;
++
++    last = b->last_buf;
++
++    if (size || last) {
++        frame = ngx_http_spdy_filter_create_data_frame(r, size, last);
++        if (frame == NULL) {
++            return NGX_ERROR;
++        }
++
++        frame->first->next = out;
++
++    } else {
++        frame = ngx_http_spdy_filter_create_sync_frame(r);
++        if (frame == NULL) {
++            return NGX_ERROR;
++        }
++
++        frame->first = out;
++    }
++
++    frame->last = cl; //FIXME
++
++    r->connection->buffered |= NGX_SPDY_WRITE_BUFFERED;
++    r->connection->write->delayed = 1;
++
++    ctx->waiting++;
++
++    sc = r->spdy_stream->connection;
++
++    ngx_http_spdy_append_frame(sc, frame);
++
++    if (sc->connection->write->ready) {
++        ngx_post_event(sc->connection->write, &ngx_posted_events);
++    }
++
++    return NGX_AGAIN;
++}
++
++
++static ngx_http_spdy_frame_chain_t *
++ngx_http_spdy_filter_create_data_frame(ngx_http_request_t *r, ngx_uint_t len,
++    ngx_uint_t last)
++{
++    u_char                       *p;
++    ngx_buf_t                    *buf;
++    ngx_http_spdy_frame_chain_t  *frame;
++    ngx_http_spdy_filter_ctx_t   *ctx;
++
++    r = r->main;
++ 
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy create data frame len:%i last:%ui", len, last);
++
++    ctx = ngx_http_get_module_ctx(r, ngx_http_spdy_filter_module);
++
++    frame = ctx->free_data_frames;
++
++    if (frame) {
++        ctx->free_data_frames = frame->next;
++
++        frame->size = len + 8;
++        frame->request = r;
++
++        buf = frame->first->buf;
++
++        p = buf->start;
++        buf->pos = p;
++
++        if (last) {
++            p[4] = 1;
++        }
++
++        (void) ngx_spdy_frame_write_len(p + 5, len);
++
++        return frame;
++    }
++
++    frame = ngx_palloc(r->pool, sizeof(ngx_http_spdy_frame_chain_t));
++    if (frame == NULL) {
++        return NULL;
++    }
++
++    frame->first = ngx_alloc_chain_link(r->pool);
++    if (frame->first == NULL) {
++        return NULL;
++    }
++
++    buf = ngx_create_temp_buf(r->pool, 8);
++    if (buf == NULL) {
++        return NULL;
++    }
++
++    buf->tag = (ngx_buf_tag_t) &ngx_http_spdy_filter_module;
++
++    p = buf->last;
++    p = ngx_spdy_frame_write_uint32(p, r->spdy_stream->id);
++    *p++ = last;
++    buf->last = ngx_spdy_frame_write_len(p, len);
++
++    frame->size = len + 8;
++    frame->first->buf = buf;
++    frame->request = r;
++
++    return frame;
++}
++
++
++static ngx_http_spdy_frame_chain_t *
++ngx_http_spdy_filter_create_sync_frame(ngx_http_request_t *r)
++{
++    ngx_http_spdy_frame_chain_t  *frame;
++    ngx_http_spdy_filter_ctx_t   *ctx;
++
++    r = r->main;
++ 
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy create sync frame");
++
++    ctx = ngx_http_get_module_ctx(r, ngx_http_spdy_filter_module);
++
++    frame = ctx->free_frames;
++
++    if (frame) {
++        ctx->free_frames = frame->next;
++        frame->size = 0;
++        return frame;
++    }
++
++    frame = ngx_palloc(r->pool, sizeof(ngx_http_spdy_frame_chain_t));
++    if (frame == NULL) {
++        return NULL;
++    }
++
++    frame->size = 0;
++    frame->request = r;
++
++    return frame;
++}
++
++
++void
++ngx_http_spdy_filter_free_data_frame(ngx_http_spdy_frame_chain_t *frame)
++{
++    ngx_chain_t                 *cl, *ln;
++    ngx_http_request_t          *r;
++    ngx_http_spdy_filter_ctx_t  *ctx;
++
++    r = frame->request;
++    ctx = ngx_http_get_module_ctx(r, ngx_http_spdy_filter_module);
++
++    ctx->waiting--;
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "SPDY FREE DATA %i", ctx->waiting);
++
++    cl = frame->first;
++
++    if (cl->buf->tag == (ngx_buf_tag_t) &ngx_http_spdy_filter_module) {
++        cl = cl->next;
++        frame->next = ctx->free_data_frames;                                                  \
++        ctx->free_data_frames = frame;
++    }
++
++    do {
++        ln = cl;
++        cl = cl->next;
++        ngx_free_chain(r->pool, ln);
++    } while (ln != frame->last);
++}
++
++
++static ngx_int_t
++ngx_http_spdy_filter_init(ngx_conf_t *cf)
++{
++    ngx_http_next_header_filter = ngx_http_top_header_filter;
++    ngx_http_top_header_filter = ngx_http_spdy_header_filter;
++
++    ngx_http_next_body_filter = ngx_http_top_body_filter;
++    ngx_http_top_body_filter = ngx_http_spdy_body_filter;
++
++    return NGX_OK;
++}
+Index: src/http/ngx_http_core_module.c
+===================================================================
+--- src/http/ngx_http_core_module.c	(revision 4681)
++++ src/http/ngx_http_core_module.c	(working copy)
+@@ -4024,6 +4024,18 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t
+ #endif
+         }
+ 
++        if (ngx_strcmp(value[n].data, "spdy") == 0) {
++#if (NGX_HTTP_SPDY)
++            lsopt.spdy = 1;
++            continue;
++#else
++            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                               "the \"spdy\" parameter requires "
++                               "ngx_http_spdy_module");
++            return NGX_CONF_ERROR;
++#endif
++        }
++
+         if (ngx_strncmp(value[n].data, "so_keepalive=", 13) == 0) {
+ 
+             if (ngx_strcmp(&value[n].data[13], "on") == 0) {
+Index: src/http/ngx_http_request.h
+===================================================================
+--- src/http/ngx_http_request.h	(revision 4681)
++++ src/http/ngx_http_request.h	(working copy)
+@@ -267,8 +267,6 @@ typedef struct {
+ } ngx_http_headers_out_t;
+ 
+ 
+-typedef void (*ngx_http_client_body_handler_pt)(ngx_http_request_t *r);
+-
+ typedef struct {
+     ngx_temp_file_t                  *temp_file;
+     ngx_chain_t                      *bufs;
+@@ -420,6 +418,9 @@ struct ngx_http_request_s {
+     ngx_uint_t                        err_status;
+ 
+     ngx_http_connection_t            *http_connection;
++#if (NGX_HTTP_SPDY)
++    ngx_http_spdy_stream_t           *spdy_stream;
++#endif
+ 
+     ngx_http_log_handler_pt           log_handler;
+ 
+Index: src/http/ngx_http_upstream.c
+===================================================================
+--- src/http/ngx_http_upstream.c	(revision 4681)
++++ src/http/ngx_http_upstream.c	(working copy)
+@@ -427,6 +427,13 @@ ngx_http_upstream_init(ngx_http_request_t *r)
+     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                    "http init upstream, client timer: %d", c->read->timer_set);
+ 
++#if (NGX_HTTP_SPDY)
++    if (r->spdy_stream) {
++        ngx_http_upstream_init_request(r);
++        return;
++    }
++#endif
++
+     if (c->read->timer_set) {
+         ngx_del_timer(c->read);
+     }
+Index: src/http/ngx_http_core_module.h
+===================================================================
+--- src/http/ngx_http_core_module.h	(revision 4681)
++++ src/http/ngx_http_core_module.h	(working copy)
+@@ -75,6 +75,9 @@ typedef struct {
+ #if (NGX_HTTP_SSL)
+     unsigned                   ssl:1;
+ #endif
++#if (NGX_HTTP_SPDY)
++    unsigned                   spdy:1;
++#endif
+ #if (NGX_HAVE_INET6 && defined IPV6_V6ONLY)
+     unsigned                   ipv6only:2;
+ #endif
+@@ -215,8 +218,11 @@ typedef struct {
+     ngx_http_virtual_names_t  *virtual_names;
+ 
+ #if (NGX_HTTP_SSL)
+-    ngx_uint_t                 ssl;   /* unsigned  ssl:1; */
++    unsigned                   ssl:1;
+ #endif
++#if (NGX_HTTP_SPDY)
++    unsigned                   spdy:1;
++#endif
+ } ngx_http_addr_conf_t;
+ 
+ 
+Index: src/http/ngx_http_request_body.c
+===================================================================
+--- src/http/ngx_http_request_body.c	(revision 4681)
++++ src/http/ngx_http_request_body.c	(working copy)
+@@ -39,11 +39,37 @@ ngx_http_read_client_request_body(ngx_http_request
+ 
+     r->main->count++;
+ 
+-    if (r->request_body || r->discard_body) {
++    if (r->discard_body) {
+         post_handler(r);
+         return NGX_OK;
+     }
+ 
++#if (NGX_HTTP_SPDY)
++    if (r->spdy_stream) {
++        if (!r->request_body) {
++            if (ngx_http_spdy_init_request_body(r) != NGX_OK) {
++                return NGX_HTTP_INTERNAL_SERVER_ERROR;
++            }
++        }
++
++        rb = r->request_body;
++
++        if (r->spdy_stream->half_closed) {
++            post_handler(r);
++            return NGX_OK;
++        }
++
++        rb->post_handler = post_handler;
++
++        return NGX_AGAIN;
++    }
++#endif
++
++    if (r->request_body) {
++        post_handler(r);
++        return NGX_OK;
++    }
++
+     if (ngx_http_test_expect(r) != NGX_OK) {
+         return NGX_HTTP_INTERNAL_SERVER_ERROR;
+     }
+@@ -445,6 +471,11 @@ ngx_http_discard_request_body(ngx_http_request_t *
+         return NGX_OK;
+     }
+ 
++    if (r->spdy_stream) {
++        r->discard_body = 1;
++        return NGX_OK;
++    }
++
+     if (ngx_http_test_expect(r) != NGX_OK) {
+         return NGX_HTTP_INTERNAL_SERVER_ERROR;
+     }
+Index: src/http/ngx_http_spdy.c
+===================================================================
+--- src/http/ngx_http_spdy.c	(revision 0)
++++ src/http/ngx_http_spdy.c	(revision 0)
+@@ -0,0 +1,3271 @@
++
++/*
++ * Copyright (C) Nginx, Inc.
++ * Copyright (C) Valentin V. Bartenev
++ */
++
++
++#include <ngx_config.h>
++#include <ngx_core.h>
++#include <ngx_http.h>
++
++#include <zlib.h>
++
++
++#if (NGX_HAVE_GCC_ATTRIBUTE_ALIGNED)
++#define ngx_aligned(x)        __attribute__(( aligned (x) ))
++#else
++#define ngx_aligned(x)
++#endif
++
++
++#if (NGX_HAVE_LITTLE_ENDIAN && NGX_HAVE_NONALIGNED)
++
++#define ngx_str5cmp(m, c0, c1, c2, c3, c4)                                    \
++    *(uint32_t *) m == (c3 << 24 | c2 << 16 | c1 << 8 | c0)                   \
++        && m[4] == c4
++
++#else
++
++#define ngx_str5cmp(m, c0, c1, c2, c3, c4)                                    \
++    m[0] == c0 && m[1] == c1 && m[2] == c2 && m[3] == c3 && m[4] == c4
++
++#endif
++
++
++#if (NGX_HAVE_NONALIGNED)
++
++#define ngx_spdy_frame_parse_uint16(p)  ntohs(*(uint16_t *) (p))
++#define ngx_spdy_frame_parse_uint32(p)  ntohl(*(uint32_t *) (p))
++#define ngx_spdy_frame_parse_len(p)    (ntohl(*(uint32_t *) (p)) >> 8)
++#define ngx_spdy_frame_parse_sid(p)    (ntohl(*(uint32_t *) (p)) & 0x7fffffff)
++
++#else
++
++#define ngx_spdy_frame_parse_uint16(p) ((p)[0] << 8 | (p)[1])
++#define ngx_spdy_frame_parse_uint32(p)                                        \
++    ((p)[0] << 24 | (p)[1] << 16 | (p)[2] << 8 | (p)[3])
++#define ngx_spdy_frame_parse_len(p)    ((p)[0] << 16 | (p)[1] << 8 | (p)[2])
++#define ngx_spdy_frame_parse_sid(p)                                           \
++    (((p)[0] & 0x7f) << 24 | (p)[1] << 16 | (p)[2] << 8 | (p)[3])
++
++#endif
++
++
++#define NGX_SPDY_HEADER_SIZE          8
++
++#define NGX_SPDY_CTRL_BYTE            0x80
++
++#define NGX_SPDY_SYN_STREAM           1
++#define NGX_SPDY_SYN_REPLY            2
++#define NGX_SPDY_RST_STREAM           3
++#define NGX_SPDY_SETTINGS             4
++#define NGX_SPDY_NOOP                 5
++#define NGX_SPDY_PING                 6
++#define NGX_SPDY_GOAWAY               7
++#define NGX_SPDY_HEADERS              8
++
++
++#if (NGX_HAVE_LITTLE_ENDIAN)
++
++#define NGX_SPDY_SYN_STREAM_HEAD                                              \
++    (NGX_SPDY_SYN_STREAM << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_SYN_REPLY_HEAD                                               \
++    (NGX_SPDY_SYN_REPLY << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_RST_STREAM_HEAD                                              \
++    (NGX_SPDY_RST_STREAM << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_SETTINGS_HEAD                                                \
++    (NGX_SPDY_SETTINGS << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_NOOP_HEAD                                                    \
++    (NGX_SPDY_NOOP << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_PING_HEAD                                                    \
++    (NGX_SPDY_PING << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_GOAWAY_HEAD                                                  \
++    (NGX_SPDY_GOAWAY << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#define NGX_SPDY_HEADERS_HEAD                                                 \
++    (NGX_SPDY_HEADERS << 24 | NGX_SPDY_VERSION << 8 | NGX_SPDY_CTRL_BYTE)
++
++#else
++
++#define NGX_SPDY_SYN_STREAM_HEAD                                              \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_SYN_STREAM)
++
++#define NGX_SPDY_SYN_REPLY_HEAD                                               \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_SYN_REPLY)
++
++#define NGX_SPDY_RST_STREAM_HEAD                                              \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_RST_STREAM)
++
++#define NGX_SPDY_SETTINGS_HEAD                                                \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_SETTINGS)
++
++#define NGX_SPDY_NOOP_HEAD                                                    \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_NOOP)
++
++#define NGX_SPDY_PING_HEAD                                                    \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_PING)
++
++#define NGX_SPDY_GOAWAY_HEAD                                                  \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_GOAWAY)
++
++#define NGX_SPDY_HEADERS_HEAD                                                 \
++    (NGX_SPDY_CTRL_BYTE << 24 | NGX_SPDY_VERSION << 16 | NGX_SPDY_HEADERS)
++
++#endif
++
++
++#define NGX_SPDY_PROTOCOL_ERROR            1
++#define NGX_SPDY_INVALID_STREAM            2
++#define NGX_SPDY_REFUSED_STREAM            3
++#define NGX_SPDY_UNSUPPORTED_VERSION       4
++#define NGX_SPDY_CANCEL                    5
++#define NGX_SPDY_INTERNAL_ERROR            6
++#define NGX_SPDY_FLOW_CONTROL_ERROR        7
++
++#define NGX_SPDY_VERSION_HEADER_HASH       (ngx_uint_t) 107725790424ull
++#define NGX_SPDY_SCHEME_HEADER_HASH        3386979749u
++#define NGX_SPDY_METHOD_HEADER_HASH        3217412321u
++#define NGX_SPDY_URL_HEADER_HASH           116079u
++
++#define NGX_SPDY_SKIP_HEADERS_BUFFER_SIZE  4096
++
++#define NGX_SPDY_CTRL_FRAME_BUFFER_SIZE    16
++
++
++typedef struct {
++    u_char    len;
++    u_char    method[11];
++    uint32_t  value;
++} ngx_http_spdy_method_test_t;
++
++
++static u_char ngx_http_spdy_dict[] =
++    "options" "get" "head" "post" "put" "delete" "trace"
++    "accept" "accept-charset" "accept-encoding" "accept-language"
++    "authorization" "expect" "from" "host"
++    "if-modified-since" "if-match" "if-none-match" "if-range"
++    "if-unmodifiedsince" "max-forwards" "proxy-authorization"
++    "range" "referer" "te" "user-agent"
++    "100" "101" "200" "201" "202" "203" "204" "205" "206"
++    "300" "301" "302" "303" "304" "305" "306" "307"
++    "400" "401" "402" "403" "404" "405" "406" "407" "408" "409" "410"
++    "411" "412" "413" "414" "415" "416" "417"
++    "500" "501" "502" "503" "504" "505"
++    "accept-ranges" "age" "etag" "location" "proxy-authenticate" "public"
++    "retry-after" "server" "vary" "warning" "www-authenticate" "allow"
++    "content-base" "content-encoding" "cache-control" "connection" "date"
++    "trailer" "transfer-encoding" "upgrade" "via" "warning"
++    "content-language" "content-length" "content-location"
++    "content-md5" "content-range" "content-type" "etag" "expires"
++    "last-modified" "set-cookie"
++    "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday" "Sunday"
++    "Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"
++    "chunked" "text/html" "image/png" "image/jpg" "image/gif"
++    "application/xml" "application/xhtml" "text/plain" "public" "max-age"
++    "charset=iso-8859-1" "utf-8" "gzip" "deflate" "HTTP/1.1" "status"
++    "version" "url";
++
++static void *ngx_http_spdy_zalloc(void *opaque, u_int items, u_int size);
++static void ngx_http_spdy_zfree(void *opaque, void *address);
++
++static void ngx_http_spdy_read_handler(ngx_event_t *rev);
++static void ngx_http_spdy_write_handler(ngx_event_t *wev);
++static void ngx_http_spdy_keepalive_handler(ngx_event_t *rev);
++
++#define ngx_http_spdy_streams_index_size(sscf)  (sscf->streams_index_mask + 1)
++#define ngx_http_spdy_stream_index(sscf, sid)                                 \
++    ((sid >> 1) & sscf->streams_index_mask)
++static ngx_http_spdy_stream_t *ngx_http_spdy_get_stream_by_id(
++    ngx_http_spdy_connection_t *sc, ngx_uint_t sid);
++static void ngx_http_spdy_stream_index_cleanup(void *data);
++
++static u_char *ngx_http_spdy_log_error_handler(ngx_http_request_t *r,
++    ngx_http_request_t *sr, u_char *buf, size_t len);
++static void ngx_http_spdy_writer(ngx_http_request_t *r);
++
++static ngx_int_t ngx_http_spdy_init_default_request(
++    ngx_http_spdy_connection_t *sc);
++static ngx_http_request_t *ngx_http_spdy_create_request(
++    ngx_http_spdy_connection_t *sc);
++
++static void ngx_http_spdy_run_request(ngx_http_request_t *r);
++static void ngx_http_spdy_terminate_request(ngx_http_request_t *r,
++    ngx_int_t rc);
++static void ngx_http_spdy_terminate_handler(ngx_http_request_t *r);
++static void ngx_http_spdy_request_finalizer(ngx_http_request_t *r);
++static void ngx_http_spdy_close_request(ngx_http_request_t *r, ngx_int_t rc);
++static void ngx_http_spdy_free_request(ngx_http_request_t *r, ngx_int_t rc);
++
++static void ngx_http_spdy_handle_connection(ngx_http_spdy_connection_t *sc);
++static void ngx_http_spdy_finalize_connection(ngx_http_spdy_connection_t *sc,
++    ngx_int_t rc);
++static void ngx_http_spdy_close_connection(ngx_connection_t *c);
++
++static ngx_int_t ngx_http_spdy_process_frame(ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_detect_settings_frame(
++    ngx_http_spdy_connection_t *sc, u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_settings_frame(
++    ngx_http_spdy_connection_t *sc, u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_skip_frame(ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_syn_stream(
++    ngx_http_spdy_connection_t *sc, u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_data_frame(
++    ngx_http_spdy_connection_t *sc, u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_rst_stream(
++    ngx_http_spdy_connection_t *sc, u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_ping(ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_process_headers(ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++static ngx_int_t ngx_http_spdy_skip_headers(ngx_http_spdy_connection_t *sc,
++    u_char **pos, size_t size);
++
++static ngx_int_t ngx_http_spdy_parse_header(ngx_http_request_t *r,
++    ngx_uint_t allow_underscores);
++static ngx_int_t ngx_http_spdy_parse_version(ngx_http_request_t *r);
++static ngx_int_t ngx_http_spdy_parse_method(ngx_http_request_t *r);
++static ngx_int_t ngx_http_spdy_parse_uri(ngx_http_request_t *r);
++
++static ngx_int_t ngx_http_spdy_alloc_large_header_buffer(ngx_http_request_t *r);
++static ngx_int_t ngx_http_spdy_construct_request_line(ngx_http_request_t *r);
++
++static ngx_http_spdy_frame_chain_t *ngx_http_spdy_alloc_ctrl_frame(
++    ngx_http_spdy_connection_t *sc);
++#define ngx_http_spdy_free_ctrl_frame(sc, frame)                              \
++    frame->next = sc->free_ctrl_frames;                                       \
++    sc->free_ctrl_frames = frame
++
++static void ngx_http_spdy_prepend_frame(ngx_http_spdy_connection_t *sc,
++    ngx_http_spdy_frame_chain_t *frame);
++
++static ngx_int_t ngx_http_spdy_send_rst_stream(ngx_http_spdy_connection_t *sc,
++    ngx_uint_t sid, ngx_uint_t status);
++static ngx_int_t ngx_http_spdy_send_settings(ngx_http_spdy_connection_t *sc);
++
++
++static u_char *ngx_http_spdy_recv_buffer;
++
++
++void
++ngx_http_init_spdy(ngx_event_t *rev)
++{
++    int                          rc;
++    ngx_connection_t            *c;
++    ngx_http_spdy_srv_conf_t    *sscf;
++    ngx_http_spdy_connection_t  *sc;
++
++    c = rev->data;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "init spdy request");
++
++    sc = ngx_pcalloc(c->pool, sizeof(ngx_http_spdy_connection_t));
++    if (sc == NULL) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    sc->connection = c;
++
++    c->data = sc;
++
++    if (ngx_http_spdy_init_default_request(sc) != NGX_OK) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    sc->handler = ngx_http_spdy_detect_settings_frame;
++
++    sc->zstream_in.zalloc = ngx_http_spdy_zalloc;
++    sc->zstream_in.zfree = ngx_http_spdy_zfree;
++    sc->zstream_in.opaque = sc;
++
++    rc = inflateInit(&sc->zstream_in);
++    if (rc != Z_OK) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "inflateInit() failed: %d", rc);
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    sc->zstream_out.zalloc = ngx_http_spdy_zalloc;
++    sc->zstream_out.zfree = ngx_http_spdy_zfree;
++    sc->zstream_out.opaque = sc;
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++
++    rc = deflateInit2(&sc->zstream_out,
++                     (int) sscf->headers_comp,
++                     Z_DEFLATED,
++                     (int) sscf->headers_comp_wbits,
++                     (int) sscf->headers_comp_memlevel,
++                     Z_DEFAULT_STRATEGY);
++
++    if (rc != Z_OK) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "deflateInit2() failed: %d", rc);
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    rc = deflateSetDictionary(&sc->zstream_out, ngx_http_spdy_dict,
++                              sizeof(ngx_http_spdy_dict));
++    if (rc != Z_OK) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "deflateSetDictionary() failed: %d", rc);
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    sc->streams_index = ngx_pcalloc(c->pool,
++                                    ngx_http_spdy_streams_index_size(sscf)
++                                    * sizeof(ngx_http_spdy_stream_t *));
++    if (sc->streams_index == NULL) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    rev->handler = ngx_http_spdy_read_handler;
++    c->write->handler = ngx_http_spdy_write_handler;
++
++    ngx_http_spdy_read_handler(rev);
++}
++
++
++ngx_int_t
++ngx_http_spdy_alloc_recv_buffer(ngx_cycle_t *cycle)
++{
++    ngx_http_spdy_main_conf_t  *smcf;
++
++    smcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_spdy_module);
++
++    if (smcf) {
++        ngx_http_spdy_recv_buffer = ngx_palloc(cycle->pool,
++                                               smcf->recv_buffer_size);
++        if (ngx_http_spdy_recv_buffer == NULL) {
++            return NGX_ERROR;
++        }
++    }
++
++    return NGX_OK;
++}
++
++
++static void *
++ngx_http_spdy_zalloc(void *opaque, u_int items, u_int size)
++{
++    ngx_http_spdy_connection_t *sc = opaque;
++
++    return ngx_palloc(sc->connection->pool, items * size);
++}
++
++
++static void
++ngx_http_spdy_zfree(void *opaque, void *address)
++{
++#if 0
++    ngx_http_spdy_connection_t *sc = opaque;
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy zfree: %p", address);
++#endif
++}
++
++
++static ngx_int_t
++ngx_http_spdy_init_default_request(ngx_http_spdy_connection_t *sc)
++{
++    ngx_uint_t                  i;
++    ngx_connection_t           *c;
++    struct sockaddr_in         *sin;
++    ngx_http_port_t            *port;
++    ngx_http_request_t         *r;
++    ngx_http_in_addr_t         *addr;
++    ngx_http_addr_conf_t       *addr_conf;
++    ngx_http_core_srv_conf_t   *cscf;
++    ngx_http_core_loc_conf_t   *clcf;
++#if (NGX_HAVE_INET6)
++    struct sockaddr_in6        *sin6;
++    ngx_http_in6_addr_t        *addr6;
++#endif
++
++    c = sc->connection;
++
++    r = ngx_pcalloc(c->pool, sizeof(ngx_http_request_t));
++    if (r == NULL) {
++        return NGX_ERROR;
++    }
++
++    r->signature = NGX_HTTP_MODULE;
++
++    /* find the server configuration for the address:port */
++
++    port = c->listening->servers;
++
++    if (port->naddrs > 1) {
++
++        /*
++         * there are several addresses on this port and one of them
++         * is an "*:port" wildcard so getsockname() in ngx_http_server_addr()
++         * is required to determine a server address
++         */
++
++        if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
++            return NGX_ERROR;
++        }
++
++        switch (c->local_sockaddr->sa_family) {
++
++#if (NGX_HAVE_INET6)
++        case AF_INET6:
++            sin6 = (struct sockaddr_in6 *) c->local_sockaddr;
++
++            addr6 = port->addrs;
++
++            /* the last address is "*" */
++
++            for (i = 0; i < port->naddrs - 1; i++) {
++                if (ngx_memcmp(&addr6[i].addr6, &sin6->sin6_addr, 16) == 0) {
++                    break;
++                }
++            }
++
++            addr_conf = &addr6[i].conf;
++
++            break;
++#endif
++
++        default: /* AF_INET */
++            sin = (struct sockaddr_in *) c->local_sockaddr;
++
++            addr = port->addrs;
++
++            /* the last address is "*" */
++
++            for (i = 0; i < port->naddrs - 1; i++) {
++                if (addr[i].addr == sin->sin_addr.s_addr) {
++                    break;
++                }
++            }
++
++            addr_conf = &addr[i].conf;
++
++            break;
++        }
++
++    } else {
++
++        switch (c->local_sockaddr->sa_family) {
++
++#if (NGX_HAVE_INET6)
++        case AF_INET6:
++            addr6 = port->addrs;
++            addr_conf = &addr6[0].conf;
++            break;
++#endif
++
++        default: /* AF_INET */
++            addr = port->addrs;
++            addr_conf = &addr[0].conf;
++            break;
++        }
++    }
++
++    r->virtual_names = addr_conf->virtual_names;
++
++    /* the default server configuration for the address:port */
++    cscf = addr_conf->default_server;
++
++    r->main_conf = cscf->ctx->main_conf;
++    r->srv_conf = cscf->ctx->srv_conf;
++    r->loc_conf = cscf->ctx->loc_conf;
++
++    r->read_event_handler = ngx_http_block_reading;
++
++    r->main_filter_need_in_memory = 1;
++
++    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
++    c->log->file = clcf->error_log->file;
++    if (!(c->log->log_level & NGX_LOG_DEBUG_CONNECTION)) {
++        c->log->log_level = clcf->error_log->log_level;
++    }
++
++    r->count = 1;
++    r->method = NGX_HTTP_UNKNOWN;
++
++    r->headers_in.content_length_n = -1;
++    r->headers_in.keep_alive_n = -1;
++    r->headers_out.content_length_n = -1;
++    r->headers_out.last_modified_time = -1;
++
++    r->uri_changes = NGX_HTTP_MAX_URI_CHANGES + 1;
++    r->subrequests = NGX_HTTP_MAX_SUBREQUESTS + 1;
++
++    r->http_state = NGX_HTTP_READING_REQUEST_STATE;
++
++    r->valid_location = 1;
++    r->log_handler = ngx_http_spdy_log_error_handler;
++
++#if (NGX_STAT_STUB)
++    r->stat_reading = 1;
++#endif
++
++    sc->default_request = r;
++
++    return NGX_OK;
++}
++
++
++static ngx_http_request_t *
++ngx_http_spdy_create_request(ngx_http_spdy_connection_t *sc)
++{
++    ngx_log_t                  *log;
++    ngx_pool_t                 *pool;
++    ngx_time_t                 *tp;
++    ngx_event_t                *ev;
++    ngx_connection_t           *fc;
++    ngx_http_request_t         *r;
++    ngx_http_log_ctx_t         *ctx;
++    ngx_http_core_srv_conf_t   *cscf;
++    ngx_http_core_main_conf_t  *cmcf;
++
++    fc = sc->fake_connections;
++
++    if (fc) {
++        sc->fake_connections = fc->data;
++
++    } else {
++        fc = ngx_palloc(sc->connection->pool, sizeof(ngx_connection_t));
++        if (fc == NULL) {
++            return NULL;
++        }
++    }
++
++    ngx_memcpy(fc, sc->connection, sizeof(ngx_connection_t));
++
++    fc->sndlowat = 1;
++
++    cscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_core_module);
++
++    pool = ngx_create_pool(cscf->request_pool_size, sc->connection->log);
++    if (pool == NULL) {
++        return NULL;
++    }
++
++    ev = ngx_pcalloc(pool, sizeof(ngx_event_t));
++    if (ev == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    ev->ready = 1;
++
++    fc->write = ev;
++    fc->read = ev;
++
++    log = ngx_palloc(pool, sizeof(ngx_log_t));
++    if (log == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    *log = *fc->log;
++    fc->log = log;
++
++    r = ngx_palloc(pool, sizeof(ngx_http_request_t));
++    if (r == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    ngx_memcpy(r, sc->default_request, sizeof(ngx_http_request_t));
++
++    r->pool = pool;
++    r->connection = fc;
++
++    fc->data = r;
++
++    ctx = ngx_palloc(pool, sizeof(ngx_http_log_ctx_t));
++    if (ctx == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    ctx->connection = fc;
++    ctx->request = r;
++    ctx->current_request = r;
++
++    log->data = ctx;
++
++    r->header_in = ngx_create_temp_buf(pool,
++                                       cscf->client_header_buffer_size);
++    if (r->header_in == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    if (ngx_list_init(&r->headers_out.headers, pool, 20,
++                      sizeof(ngx_table_elt_t))
++        != NGX_OK)
++    {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    r->ctx = ngx_pcalloc(pool, sizeof(void *) * ngx_http_max_module);
++    if (r->ctx == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
++
++    r->variables = ngx_pcalloc(pool, cmcf->variables.nelts
++                                        * sizeof(ngx_http_variable_value_t));
++    if (r->variables == NULL) {
++        ngx_destroy_pool(pool);
++        return NULL;
++    }
++
++    /*c->single_connection = 1;
++    c->destroyed = 0;*/ //FIXME
++
++    r->main = r;
++
++    tp = ngx_timeofday();
++    r->start_sec = tp->sec;
++    r->start_msec = tp->msec;
++
++    sc->connection->requests++;
++
++#if (NGX_STAT_STUB)
++
++    if (sc->processing) {
++        (void) ngx_atomic_fetch_add(ngx_stat_active, 1);
++    }
++
++    (void) ngx_atomic_fetch_add(ngx_stat_reading, 1);
++    (void) ngx_atomic_fetch_add(ngx_stat_requests, 1);
++
++#endif
++
++    return r;
++}
++
++
++static void
++ngx_http_spdy_read_handler(ngx_event_t *rev)
++{
++    u_char                      *p, *end;
++    size_t                       available;
++    ssize_t                      n;
++    ngx_int_t                    rc;
++    ngx_uint_t                   rest;
++    ngx_connection_t            *c;
++    ngx_http_spdy_main_conf_t   *smcf;
++    ngx_http_spdy_connection_t  *sc;
++
++    c = rev->data;
++    sc = c->data;
++
++    if (rev->timedout) {
++        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
++        ngx_http_spdy_finalize_connection(sc, NGX_HTTP_REQUEST_TIME_OUT);
++        return;
++    }
++
++    sc->active = 1;
++
++    smcf = ngx_http_get_module_main_conf(sc->default_request,
++                                         ngx_http_spdy_module);
++
++    available = smcf->recv_buffer_size - NGX_SPDY_STATE_BUFFER_SIZE + 1;
++
++    rc = sc->waiting ? NGX_AGAIN : NGX_DONE;
++    rest = sc->buffer_used;
++
++    do {
++        p = ngx_http_spdy_recv_buffer;
++
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                               "SPDY rest %ui", rest);
++
++        ngx_memcpy(p, sc->buffer, NGX_SPDY_STATE_BUFFER_SIZE);
++
++        n = c->recv(c, p + rest, available - rest);
++
++        if (n == NGX_AGAIN) {
++            break;
++        }
++
++        if (n == 0 && (sc->waiting || sc->processing)) {
++            ngx_log_error(NGX_LOG_INFO, c->log, 0,
++                          "client closed prematurely connection");
++        }
++
++        if (n == 0 || n == NGX_ERROR) {
++            ngx_http_spdy_finalize_connection(sc,
++                                               NGX_HTTP_CLIENT_CLOSED_REQUEST);
++            return;
++        }
++
++        n += rest;
++        end = p + n;
++
++        do {
++            rc = sc->handler(sc, &p, n);
++
++            n = end - p;
++
++            if (rc == NGX_AGAIN) {
++                ngx_memcpy(sc->buffer, p, NGX_SPDY_STATE_BUFFER_SIZE);
++                break;
++            }
++
++            if (rc == NGX_ERROR) {
++                ngx_log_error(NGX_LOG_WARN, c->log, 0, "SPDY ERROR");
++                ngx_http_spdy_finalize_connection(sc,
++                                               NGX_HTTP_INTERNAL_SERVER_ERROR);
++                return;
++            }
++
++        } while (n);
++
++        rest = n;
++
++        if (sc->out_frames && c->write->ready) {
++            ngx_http_spdy_write_handler(c->write);
++        }
++
++    } while (rev->ready);
++
++#if (NGX_DEBUG)
++    if (rest > NGX_SPDY_STATE_BUFFER_SIZE) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "spdy state buffer overflow: "
++                      "%i bytes required", n);
++        ngx_http_spdy_finalize_connection(sc, NGX_HTTP_INTERNAL_SERVER_ERROR);
++        return;
++    }
++#endif
++
++    sc->buffer_used = rest;
++
++    if (ngx_handle_read_event(rev, 0) != NGX_OK) {
++        ngx_http_spdy_finalize_connection(sc, NGX_HTTP_INTERNAL_SERVER_ERROR);
++        return;
++    }
++
++    sc->active = 0;
++
++    if (rc == NGX_AGAIN) {
++        sc->waiting = 1;
++    }
++
++    if (sc->processing) {
++        if (rev->timer_set) {
++            ngx_del_timer(rev);
++        }
++        return;
++    }
++
++    ngx_http_spdy_handle_connection(sc);
++}
++
++
++static void
++ngx_http_spdy_write_handler(ngx_event_t *wev)
++{
++    off_t                         sent;
++    ngx_chain_t                  *cl;
++    ngx_connection_t             *c, *fc;
++    ngx_http_log_ctx_t           *ctx;
++    ngx_http_request_t           *r;
++    ngx_http_core_loc_conf_t     *clcf;
++    ngx_http_spdy_connection_t   *sc;
++    ngx_http_spdy_frame_chain_t  *frame, *frm;
++
++    c = wev->data;
++    sc = c->data;
++
++    if (wev->timedout) {
++        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                       "SPDY DEBUG: write event timed out");
++        return;
++    }
++
++    if (sc->out_frames == NULL) {
++        return;
++    }
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "SPDY DEBUG: write handler");
++
++    do {
++        c->sent = 0;
++
++        cl = c->send_chain(c, sc->out, 0);
++
++        if (cl == NGX_CHAIN_ERROR) {
++            ngx_http_spdy_finalize_connection(sc,
++                                               NGX_HTTP_CLIENT_CLOSED_REQUEST);
++            return;
++        }
++
++        sent = c->sent;
++
++        if (!sent) {
++            break; //FIXME
++        }
++
++        frame = sc->out_frames;
++
++        sc->out = NULL;
++        sc->out_frames = NULL;
++        sc->out_incomplete = 0;
++
++        do {
++ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "SPDY DEBUG: sent %i frm %i", sent, frame->size);
++            r = frame->request;
++
++            if (frame->size > (ngx_uint_t) sent) {
++                sc->out_incomplete = 1;
++                frame->size -= sent;
++ 
++                if (r) {
++                    r->connection->sent += sent;
++                }
++
++                break;
++            }
++
++            sent -= frame->size;
++ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "SPDY DEBUG2: sent %i frm %i", sent, frame->size);
++            if (r == NULL) {
++                frm = frame->next;
++                ngx_http_spdy_free_ctrl_frame(sc, frame);
++                frame = frm;
++                continue;
++            }
++
++            fc = r->connection;
++
++            fc->sent += frame->size;
++
++            frm = frame->next;
++            ngx_http_spdy_filter_free_data_frame(frame);
++            frame = frm;
++
++            r = fc->data;
++
++            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                           "spdy run request: \"%V?%V\"", &r->uri, &r->args);
++
++            ctx = fc->log->data;
++            ctx->current_request = r;
++
++            fc->write->delayed = 0;
++
++            r->write_event_handler(r);
++            ngx_http_run_posted_requests(fc);
++
++        } while (sent);
++
++        if (frame) {
++
++            if (sc->out_frames) {
++                for (frm = frame; frm->next; frm = frm->next);
++                frm->next = sc->out_frames;
++                frm->last->next = sc->out;
++            }
++
++            sc->out_frames = frame;
++            sc->out = cl;
++
++            break;
++        }
++
++    } while (sc->out_frames && wev->ready);
++
++    clcf = ngx_http_get_module_loc_conf(sc->default_request,
++                                        ngx_http_core_module);
++
++    if (ngx_handle_write_event(wev, clcf->send_lowat) != NGX_OK) {
++        ngx_http_spdy_finalize_connection(sc, NGX_HTTP_INTERNAL_SERVER_ERROR);
++    }
++}
++
++
++static ngx_http_spdy_stream_t *
++ngx_http_spdy_get_stream_by_id(ngx_http_spdy_connection_t *sc,
++    ngx_uint_t sid)
++{
++    ngx_http_spdy_stream_t    *stream;
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++
++    stream = sc->streams_index[ngx_http_spdy_stream_index(sscf, sid)];
++
++    while (stream) {
++        if (stream->id == sid) {
++            return stream;
++        }
++
++        stream = stream->index;
++    }
++
++    return NULL;
++}
++
++
++static void
++ngx_http_spdy_stream_index_cleanup(void *data)
++{
++    ngx_http_request_t  *r = data;
++
++    ngx_http_spdy_stream_t     **index, *stream, *cs;
++    ngx_http_spdy_srv_conf_t    *sscf;
++    ngx_http_spdy_connection_t  *sc;
++
++    stream = r->spdy_stream;
++    sc = stream->connection;
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++
++    index = sc->streams_index + ngx_http_spdy_stream_index(sscf, stream->id);
++
++    for ( ;; ) {
++        cs = *index;
++
++        if (cs == NULL) {
++            return;
++        }
++
++        if (cs == stream) {
++            *index = cs->index;
++            return;
++        }
++
++        index = &cs->index;
++    }
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_frame(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                  *p, flags;
++    size_t                   length;
++    uint32_t                 head;
++    ngx_http_spdy_stream_t  *stream;
++
++    if (size < 8) {
++        return NGX_AGAIN;
++    }
++
++    p = *pos;
++
++#if (NGX_HAVE_NONALIGNED)
++    head = *(uint32_t *) p;
++#else
++    head = p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
++#endif
++
++    flags = p[4];
++    length = ngx_spdy_frame_parse_len(p + 5);
++
++    sc->length = length;
++    sc->flags = flags;
++
++    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy process frame head:%ui f:%ui l:%ui",
++                   head, flags, length);
++
++    *pos += 8;
++
++    switch (head) {
++
++    case NGX_SPDY_SYN_STREAM_HEAD:
++        sc->handler = ngx_http_spdy_process_syn_stream;
++        return NGX_OK;
++
++    case NGX_SPDY_SYN_REPLY_HEAD:
++        //TODO log
++        return NGX_ERROR;
++
++    case NGX_SPDY_RST_STREAM_HEAD:
++        sc->handler = ngx_http_spdy_process_rst_stream;
++        return NGX_OK;
++
++    case NGX_SPDY_SETTINGS_HEAD:
++        //TODO
++        sc->handler = ngx_http_spdy_skip_frame;
++        return NGX_OK;
++
++    case NGX_SPDY_NOOP_HEAD:
++        if (flags != 0 || length != 0) {
++            //TODO log
++            return NGX_ERROR;
++        }
++        return NGX_OK;
++
++    case NGX_SPDY_PING_HEAD:
++        sc->handler = ngx_http_spdy_process_ping;
++        return NGX_OK;
++
++    case NGX_SPDY_GOAWAY_HEAD:
++        //TODO
++        sc->handler = ngx_http_spdy_skip_frame;
++        return NGX_OK;
++
++    case NGX_SPDY_HEADERS_HEAD:
++        //TODO log
++        return NGX_ERROR;
++    }
++
++    head = ntohl(head);
++
++    if (head >> 31) {
++        //TODO version & type check
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                       "spdy unknown frame %ui", head);
++
++        sc->handler = ngx_http_spdy_skip_frame;
++
++        return NGX_OK;
++    }
++
++    stream = ngx_http_spdy_get_stream_by_id(sc, head);
++
++    if (stream == NULL || stream->request->discard_body) {
++        sc->handler = ngx_http_spdy_skip_frame;
++        return NGX_OK;
++    }
++
++    if (stream->half_closed) {
++        //TODO log && error handling
++        return NGX_ERROR;
++    }
++
++    sc->stream = stream;
++    sc->handler = ngx_http_spdy_process_data_frame;
++
++    return ngx_http_spdy_process_data_frame(sc, pos, size - 8); //FIXME
++}
++
++
++static ngx_int_t
++ngx_http_spdy_detect_settings_frame(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char  *p;
++
++    if (size < 8) {
++        return NGX_AGAIN;
++    }
++
++    p = *pos;
++
++#if (NGX_HAVE_NONALIGNED)
++    if (*(uint32_t *) p != NGX_SPDY_SETTINGS_HEAD) {
++#else
++    if (p[0] != 0x80
++        || p[1] != NGX_SPDY_VERSION
++        || p[2] != 0x00
++        || p[3] != NGX_SPDY_SETTINGS)
++    {
++#endif
++        ngx_http_spdy_send_settings(sc);
++
++        sc->handler = ngx_http_spdy_process_frame;
++        return NGX_OK;
++    }
++
++    sc->length = ngx_spdy_frame_parse_len(p + 5);
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy SETTINGS frame received, size: %ui",
++                   sc->length);
++
++    *pos += 8;
++
++    sc->handler = ngx_http_spdy_process_settings_frame;
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_settings_frame(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                    *p;
++    ngx_uint_t                 v;
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    if (sc->headers == 0) {
++
++        if (size < 4) {
++            return NGX_AGAIN;
++        }
++
++        sc->headers = ngx_spdy_frame_parse_uint32(*pos);
++
++        *pos += 4;
++        size -= 4;
++        sc->length -= 4;
++
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                       "spdy SETTINGS frame consists of %ui entries",
++                       sc->headers);
++    }
++
++    p = *pos;
++
++    do {
++        if (size < 8) {
++            *pos = p;
++            return NGX_AGAIN;
++        }
++
++        if (p[0] != 0x04) {
++            p += 8;
++            size -= 8;
++            sc->length -= 8;
++            continue;
++        }
++
++        v = ngx_spdy_frame_parse_uint32(p + 4);
++
++        sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                            ngx_http_spdy_module);
++
++        if (v != sscf->concurrent_streams) {
++            ngx_http_spdy_send_settings(sc);
++        }
++
++        sc->handler = ngx_http_spdy_skip_frame;
++        return NGX_OK;
++
++    } while (--sc->headers);
++
++    ngx_http_spdy_send_settings(sc);
++
++    sc->handler = ngx_http_spdy_process_frame;
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_skip_frame(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    if (size < sc->length) {
++        *pos += size;
++        sc->length -= size;
++        return NGX_AGAIN;
++    }
++
++    *pos += sc->length;
++    sc->handler = ngx_http_spdy_process_frame;
++
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_syn_stream(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                    *p;
++    ngx_uint_t                 sid, prio, index;
++    ngx_http_cleanup_t        *cln;
++    ngx_http_request_t        *r;
++    ngx_http_spdy_stream_t    *stream;
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    if (size < 10) {
++        return NGX_AGAIN;
++    }
++
++    p = *pos;
++
++    sc->length -= 10;
++    *pos += 10;
++
++    sid = ngx_spdy_frame_parse_sid(p);
++    prio = p[5] >> 2;
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy SYN_STREAM frame sid:%ui prio:%ui", sid, prio);
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++    if (sc->processing == sscf->concurrent_streams) {
++        ngx_http_spdy_send_rst_stream(sc, sid, NGX_SPDY_REFUSED_STREAM);
++
++        sc->handler = ngx_http_spdy_skip_headers;
++        return NGX_OK;
++    }
++
++    r = ngx_http_spdy_create_request(sc);
++    if (r == NULL) {
++        return NGX_ERROR;
++    }
++
++    stream = ngx_pcalloc(r->pool, sizeof(ngx_http_spdy_stream_t));
++    if (stream == NULL) {
++        return NGX_ERROR;
++    }
++
++    r->spdy_stream = stream;
++
++    stream->id = sid;
++    stream->request = r;
++    stream->connection = sc;
++    stream->priority = prio;
++    stream->half_closed = sc->flags & NGX_SPDY_FLAG_FIN;
++
++    index = ngx_http_spdy_stream_index(sscf, sid);
++
++    stream->index = sc->streams_index[index];
++    sc->streams_index[index] = stream;
++
++    cln = ngx_http_cleanup_add(r, 0);
++    if (cln == NULL) {
++        return NGX_ERROR;
++    }
++
++    cln->handler = ngx_http_spdy_stream_index_cleanup;
++    cln->data = r;
++
++    sc->stream = stream;
++
++    sc->handler = ngx_http_spdy_process_headers;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_data_frame(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                   *p;
++    ssize_t                   n;
++    ngx_buf_t                *buf;
++    ngx_uint_t                complete;
++    ngx_temp_file_t          *tf;
++    ngx_http_request_t       *r;
++    ngx_http_request_body_t  *rb;
++
++    if (size >= sc->length) {
++        complete = 1;
++        size = sc->length;
++
++    } else {
++        complete = 0;
++        sc->length -= size;
++    }
++
++    r = sc->stream->request;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy DATA frame");
++
++    if (!r->request_body) {
++        if (ngx_http_spdy_init_request_body(r) != NGX_OK) {
++            return NGX_ERROR;
++        }
++    }
++
++    rb = r->request_body;
++    tf = rb->temp_file;
++    buf = rb->buf;
++
++    if (size) {
++        if (size > (size_t) rb->rest) {
++            return NGX_ERROR;
++        }
++
++        rb->rest -= size;
++        p = *pos;
++
++        if (tf) {
++            buf->start = p;
++            buf->pos = p;
++
++            p += size;
++
++            buf->end = p;
++            buf->last = p;
++
++            n = ngx_write_chain_to_temp_file(tf, rb->bufs);
++
++            /* TODO: n == 0 or not complete and level event */
++
++            if (n == NGX_ERROR) {
++                return NGX_ERROR;
++            }
++
++            tf->offset += n;
++
++        } else {
++            buf->last = ngx_cpymem(buf->last, p, size);
++            p += size;
++        }
++
++        *pos = p;
++    }
++
++    if (!complete) {
++        return NGX_AGAIN;
++    }
++
++    sc->handler = ngx_http_spdy_process_frame;
++
++    if (sc->flags & NGX_SPDY_FLAG_FIN) {
++
++        sc->stream->half_closed = 1;
++
++        if (tf) {
++            ngx_memzero(buf, sizeof(ngx_buf_t));
++
++            buf->in_file = 1;
++            buf->file_pos = 0;
++            buf->file_last = tf->file.offset;
++            buf->file = &tf->file;
++
++            rb->buf = NULL;
++        }
++
++        if (rb->post_handler) {
++            rb->post_handler(r);
++        }
++    }
++
++    return NGX_DONE;
++}
++
++
++ngx_int_t
++ngx_http_spdy_init_request_body(ngx_http_request_t *r)
++{
++    ngx_buf_t                 *buf;
++    ngx_temp_file_t           *tf;
++    ngx_http_request_body_t   *rb;
++    ngx_http_core_loc_conf_t  *clcf;
++
++    rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
++    if (rb == NULL) {
++        return NGX_ERROR;
++    }
++
++    r->request_body = rb;
++
++    rb->rest = r->headers_in.content_length_n;
++
++    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
++
++    if (r->request_body_in_file_only
++        || (size_t) rb->rest > clcf->client_body_buffer_size)
++    {
++        tf = ngx_pcalloc(r->pool, sizeof(ngx_temp_file_t));
++        if (tf == NULL) {
++            return NGX_ERROR;
++        }
++
++        tf->file.fd = NGX_INVALID_FILE;
++        tf->file.log = r->connection->log;
++        tf->path = clcf->client_body_temp_path;
++        tf->pool = r->pool;
++        tf->warn = "a client request body is buffered to a temporary file";
++        tf->log_level = r->request_body_file_log_level;
++        tf->persistent = r->request_body_in_persistent_file;
++        tf->clean = r->request_body_in_clean_file;
++
++        if (r->request_body_file_group_access) {
++            tf->access = 0660;
++        }
++
++        rb->temp_file = tf;
++
++        if (r->spdy_stream->half_closed) {
++            if (ngx_create_temp_file(&tf->file, tf->path, tf->pool,
++                                         tf->persistent, tf->clean, tf->access)
++                != NGX_OK)
++            {
++                return NGX_ERROR;
++            }
++
++            return NGX_OK;
++        }
++
++        buf = ngx_calloc_buf(r->pool);
++        if (buf == NULL) {
++            return NGX_ERROR;
++        }
++
++    } else {
++
++        if (rb->rest == 0) {
++            return NGX_OK;
++        }
++
++        buf = ngx_create_temp_buf(r->pool, rb->rest);
++        if (buf == NULL) {
++            return NGX_ERROR;
++        }
++    }
++
++    rb->buf = buf;
++
++    rb->bufs = ngx_alloc_chain_link(r->pool);
++    if (rb->bufs == NULL) {
++        return NGX_ERROR;
++    }
++
++    rb->bufs->buf = buf;
++    rb->bufs->next = NULL;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_rst_stream(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                  *p;
++    ngx_uint_t               sid, status;
++    ngx_http_request_t      *r;
++    ngx_http_spdy_stream_t  *stream;
++
++    if (size < 8) {
++        return NGX_AGAIN;
++    }
++
++    p = *pos;
++
++    if (sc->length != 8 || sc->flags) {
++        return NGX_ERROR;
++    }
++
++    sid = ngx_spdy_frame_parse_sid(p);
++    status = p[7];
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy RST_STREAM sid:%ui st:%ui", sid, status);
++
++
++    switch (status) {
++
++    case NGX_SPDY_PROTOCOL_ERROR:
++        /* TODO */
++        break;
++
++    case NGX_SPDY_INVALID_STREAM:
++        /* TODO */
++        break;
++
++    case NGX_SPDY_REFUSED_STREAM:
++        /* TODO */
++        break;
++
++    case NGX_SPDY_UNSUPPORTED_VERSION:
++        /* TODO */
++        break;
++
++    case NGX_SPDY_CANCEL:
++        stream = ngx_http_spdy_get_stream_by_id(sc, sid);
++        if (stream == NULL) {
++            /* TODO false cancel */
++            break;
++        }
++
++        r = stream->request;
++        r->main->count++;
++
++        ngx_http_spdy_finalize_request(r, NGX_HTTP_CLIENT_CLOSED_REQUEST);
++        ngx_http_run_posted_requests(r->connection);
++        break;
++
++    case NGX_SPDY_INTERNAL_ERROR:
++        /* TODO */
++        break;
++
++    case NGX_SPDY_FLOW_CONTROL_ERROR:
++        /* TODO */
++        break;
++
++    default:
++        return NGX_ERROR;
++    }
++
++    *pos += 8;
++    sc->handler = ngx_http_spdy_process_frame;
++
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_ping(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    u_char                       *p, *d;
++    ngx_buf_t                    *buf;
++    ngx_http_spdy_frame_chain_t  *frame;
++
++    static u_char ping_header[] = { 0x80, 0x02, 0x00, 0x06,
++                                    0x00, 0x00, 0x00, 0x04 };
++
++    if (size < 4) {
++        return NGX_AGAIN;
++    }
++
++    if (sc->length != 4) {
++        return NGX_ERROR;
++    }
++
++    p = *pos;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0, "spdy PING frame");
++
++    frame = ngx_http_spdy_alloc_ctrl_frame(sc);
++    if (frame == NULL) {
++        return NGX_ERROR;
++    }
++
++    frame->size = 12;
++
++    buf = frame->first->buf;
++
++    d = buf->start;
++    d = ngx_cpymem(d, ping_header, 8);
++    d = ngx_cpymem(d, p, 4);
++
++    buf->last = d;
++
++    ngx_http_spdy_prepend_frame(sc, frame);
++
++    sc->handler = ngx_http_spdy_process_frame;
++
++    *pos += 4;
++
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_process_headers(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    int                         z;
++    ngx_buf_t                  *buf;
++    ngx_int_t                   rc;
++    ngx_uint_t                  last;
++    ngx_table_elt_t            *h;
++    ngx_connection_t           *c;
++    ngx_http_request_t         *r;
++
++    c = sc->connection;
++    r = sc->stream->request;
++    buf = r->header_in;
++
++    if (size >= sc->length) {
++        last = 1;
++        size = sc->length;
++
++    } else {
++        last = 0;
++    }
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "spdy process headers %d of %d", size, sc->length);
++
++    sc->zstream_in.next_in = *pos;
++    sc->zstream_in.avail_in = size;
++    sc->zstream_in.next_out = buf->last;
++    sc->zstream_in.avail_out = buf->end - buf->last - 1;
++
++    z = inflate(&sc->zstream_in, Z_NO_FLUSH);
++
++    if (z == Z_NEED_DICT) {
++        z = inflateSetDictionary(&sc->zstream_in, ngx_http_spdy_dict,
++                                 sizeof(ngx_http_spdy_dict));
++        if (z != Z_OK) {
++            ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                          "spdy inflateSetDictionary() failed: %d", z);
++            return NGX_ERROR;
++        }
++
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                       "spdy inflateSetDictionary(): %d", z);
++
++        z  = sc->zstream_in.avail_in ? inflate(&sc->zstream_in, Z_NO_FLUSH)
++                                     : Z_OK;
++    }
++
++    if (z != Z_OK) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "spdy inflate() failed: %d", z);
++        return NGX_ERROR;
++    }
++
++    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "spdy inflate out: ni:%p no:%p ai:%ud ao:%ud rc:%d",
++                   sc->zstream_in.next_in, sc->zstream_in.next_out,
++                   sc->zstream_in.avail_in, sc->zstream_in.avail_out,
++                   z);
++
++    *pos = sc->zstream_in.next_in;
++
++    sc->length -= (size - sc->zstream_in.avail_in);
++    size = sc->zstream_in.avail_in;
++
++    buf->last = sc->zstream_in.next_out;
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "spdy headers decopressed: \"%*s\"",
++                   buf->last - buf->pos, buf->pos);
++
++    if (r->headers_in.headers.part.elts == NULL) {
++
++        if (buf->last - buf->pos < 2) {
++            return NGX_AGAIN;
++        }
++
++        sc->headers = ngx_spdy_frame_parse_uint16(buf->pos);
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "spdy headers count: %i", sc->headers);
++
++        buf->pos += 2;
++
++        if (ngx_list_init(&r->headers_in.headers, r->pool, sc->headers + 3,
++                          sizeof(ngx_table_elt_t))
++            != NGX_OK)
++        {
++            return NGX_ERROR;
++        }
++
++        if (ngx_array_init(&r->headers_in.cookies, r->pool, 2,
++                           sizeof(ngx_table_elt_t *))
++            != NGX_OK)
++        {
++            return NGX_ERROR;
++        }
++    }
++
++    while (sc->headers) {
++
++        rc = ngx_http_spdy_parse_header(r, 0);
++
++        switch (rc) {
++
++        case NGX_DONE:
++            sc->headers--;
++
++        case NGX_OK:
++            break;
++
++        case NGX_AGAIN:
++
++            if (sc->zstream_in.avail_in) {
++
++                rc = ngx_http_spdy_alloc_large_header_buffer(r);
++
++                if (rc == NGX_DECLINED) {
++                    /* TODO logging */
++                    ngx_http_spdy_finalize_request(r,
++                                            NGX_HTTP_REQUEST_HEADER_TOO_LARGE);
++
++                    sc->handler = ngx_http_spdy_skip_headers;
++                    return NGX_OK;
++                }
++
++                if (rc != NGX_OK) {
++                    return NGX_ERROR;
++                }
++
++                *buf->pos = '\0';
++
++                buf = r->header_in;
++
++                sc->zstream_in.next_out = buf->last;
++                sc->zstream_in.avail_out = buf->end - buf->last - 1;
++
++                z = inflate(&sc->zstream_in, Z_NO_FLUSH);
++
++                if (z != Z_OK) {
++                    ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                                  "spdy inflate() failed: %d", z);
++                    return NGX_ERROR;
++                }
++
++                *pos = sc->zstream_in.next_in;
++
++                buf->last = sc->zstream_in.next_out;
++
++                sc->length -= (size - sc->zstream_in.avail_in);
++                size = sc->zstream_in.avail_in;
++
++                continue;
++            }
++
++            if (last) {
++                ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "again while last");
++                return NGX_ERROR;
++            }
++
++            return NGX_AGAIN;
++
++        default:
++            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "NGX_ERROR");
++            return NGX_ERROR;
++        }
++
++        if (r->invalid_header) {
++
++            /* there was error while a header line parsing */
++
++            ngx_log_error(NGX_LOG_INFO, c->log, 0,
++                          "client sent invalid header line: \"%*s\"",
++                          r->header_end - r->header_name_start,
++                          r->header_name_start);
++            continue;
++        }
++
++        /* a header line has been parsed successfully */
++
++        switch (r->header_hash) {
++
++        case NGX_SPDY_URL_HEADER_HASH:
++
++            if (r->lowcase_index == 3) {
++
++                if (ngx_http_spdy_parse_uri(r) != NGX_OK) {
++                    return NGX_ERROR;
++                }
++
++                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                               "http uri: \"%V\"", &r->uri);
++
++                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                               "http args: \"%V\"", &r->args);
++
++                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                               "http exten: \"%V\"", &r->exten);
++
++                continue;
++            }
++
++            break;
++
++        case NGX_SPDY_METHOD_HEADER_HASH:
++
++            if (r->lowcase_index == 6) {
++
++                if (ngx_http_spdy_parse_method(r) != NGX_OK) {
++                    return NGX_ERROR;
++                }
++
++                continue;
++            }
++
++            break;
++
++        case NGX_SPDY_SCHEME_HEADER_HASH:
++
++            if (r->lowcase_index == 6) {
++                r->schema_start = r->header_start;
++                r->schema_end = r->header_end;
++                continue;
++            }
++
++            break;
++
++        case NGX_SPDY_VERSION_HEADER_HASH:
++
++            if (r->lowcase_index == 7) {
++
++                if (ngx_http_spdy_parse_version(r) != NGX_OK) {
++                    return NGX_ERROR;
++                }
++
++                continue;
++            }
++
++            break;
++        }
++
++        h = ngx_list_push(&r->headers_in.headers);
++        if (h == NULL) {
++            return NGX_ERROR;
++        }
++
++        h->hash = r->header_hash;
++
++        h->key.len = r->header_name_end - r->header_name_start;
++        h->key.data = r->header_name_start;
++
++        h->value.len = r->header_size;
++        h->value.data = r->header_start;
++
++        h->lowcase_key = h->key.data;
++    }
++
++    if (!last) {
++        return NGX_AGAIN;
++    }
++
++    if (buf->pos != buf->last) {
++        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "end %i %d %d", last, buf->pos, buf->last);
++        return NGX_ERROR;
++    }
++
++    *buf->pos = '\0';
++
++    sc->processing++;
++
++    ngx_http_spdy_run_request(r);
++
++    sc->handler = ngx_http_spdy_process_frame;
++
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_alloc_large_header_buffer(ngx_http_request_t *r)
++{
++    u_char                    *old, *new;
++    size_t                     rest;
++    ngx_buf_t                 *buf;
++    ngx_http_spdy_stream_t    *stream;
++    ngx_http_core_srv_conf_t  *cscf;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy alloc large header buffer");
++
++    stream = r->spdy_stream;
++
++    cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
++
++    if (stream->header_buffers
++        == (ngx_uint_t) cscf->large_client_header_buffers.num)
++    {
++        return NGX_DECLINED;
++    }
++
++    rest = r->header_in->last - r->header_in->pos;
++ 
++    if (rest >= cscf->large_client_header_buffers.size) {
++        return NGX_DECLINED;
++    }
++
++    buf = ngx_create_temp_buf(r->connection->pool,
++                              cscf->large_client_header_buffers.size);
++    if (buf == NULL) {
++        return NGX_ERROR;
++    }
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy large header alloc: %p %uz",
++                   buf->pos, buf->end - buf->last);
++
++    if (rest) {
++        old = r->header_in->pos;
++        new = buf->pos;
++
++        buf->last = ngx_cpymem(new, old, rest);
++
++        if (r->header_name_end > old) {
++            r->header_name_end = new + (r->header_name_end - old);
++
++        } else if (r->header_end > old) {
++            r->header_end = new + (r->header_end - old);
++        }
++    }
++
++    r->header_in = buf;
++
++    stream->header_buffers++;
++
++    return NGX_OK;
++}
++
++
++static void
++ngx_http_spdy_run_request(ngx_http_request_t *r)
++{
++    ngx_uint_t                  i;
++    ngx_list_part_t            *part;
++    ngx_table_elt_t            *h;
++    ngx_connection_t           *fc;
++    ngx_http_header_t          *hh;
++    ngx_http_core_main_conf_t  *cmcf;
++
++    if (ngx_http_spdy_construct_request_line(r) != NGX_OK) {
++        ngx_http_spdy_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
++        return;
++    }
++
++    fc = r->connection;
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
++                   "spdy http request line: \"%V\"", &r->request_line);
++
++    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
++
++    part = &r->headers_in.headers.part;
++    h = part->elts;
++
++    for (i = 0 ;; i++) {
++
++        if (i >= part->nelts) {
++            if (part->next == NULL) {
++                break;
++            }
++
++            part = part->next;
++            h = part->elts;
++            i = 0;
++        }
++
++        hh = ngx_hash_find(&cmcf->headers_in_hash, h[i].hash,
++                           h[i].lowcase_key, h[i].key.len);
++
++        if (hh && hh->handler(r, &h[i], hh->offset) != NGX_OK) {
++            ngx_http_spdy_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
++            return;
++        }
++
++        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, fc->log, 0,
++                       "http header: \"%V: %V\"", &h[i].key, &h[i].value);
++    }
++
++    r->http_state = NGX_HTTP_PROCESS_REQUEST_STATE;
++
++    if (ngx_http_process_request_header(r) != NGX_OK) {
++        return;
++    }
++
++    if (r->plain_http) {
++        ngx_log_error(NGX_LOG_INFO, fc->log, 0,
++                      "client sent plain HTTP request to HTTPS port");
++        ngx_http_spdy_finalize_request(r, NGX_HTTP_TO_HTTPS);
++        return;
++    }
++
++#if (NGX_STAT_STUB)
++    (void) ngx_atomic_fetch_add(ngx_stat_reading, -1);
++    r->stat_reading = 0;
++    (void) ngx_atomic_fetch_add(ngx_stat_writing, 1);
++    r->stat_writing = 1;
++#endif
++
++    r->write_event_handler = ngx_http_core_run_phases;
++
++    ngx_http_core_run_phases(r);
++    ngx_http_run_posted_requests(fc);
++}
++
++
++static ngx_int_t
++ngx_http_spdy_skip_headers(ngx_http_spdy_connection_t *sc, u_char **pos,
++    size_t size)
++{
++    int     n;
++    u_char  buffer[NGX_SPDY_SKIP_HEADERS_BUFFER_SIZE];
++
++    sc->zstream_in.next_in = *pos;
++    sc->zstream_in.avail_in = (size < sc->length) ? size : sc->length;
++
++    while (sc->zstream_in.avail_in) {
++        sc->zstream_in.next_out = buffer;
++        sc->zstream_in.avail_out = NGX_SPDY_SKIP_HEADERS_BUFFER_SIZE;
++
++        n = inflate(&sc->zstream_in, Z_NO_FLUSH); //FIXME error handling
++        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0, "spdy inflate(): %d", n);
++
++        if (n != Z_OK) {
++            return NGX_ERROR;
++        }
++    }
++
++    *pos = sc->zstream_in.next_in;
++
++    if (size < sc->length) {
++        sc->length -= size;
++        return NGX_AGAIN;
++    }
++
++    sc->handler = ngx_http_spdy_process_frame;
++
++    return NGX_DONE;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_parse_header(ngx_http_request_t *r,
++    ngx_uint_t allow_underscores)
++{
++    u_char      *p, *end, ch;
++    ngx_uint_t   len, hash;
++    enum {
++        sw_name_len = 0,
++        sw_name,
++        sw_value_len,
++        sw_value
++    } state;
++
++    state = r->state;
++
++    p = r->header_in->pos;
++    end = r->header_in->last;
++
++    switch (state) {
++
++    case sw_name_len:
++
++        if (end - p < 2) {
++            return NGX_AGAIN;
++        }
++
++        len = ngx_spdy_frame_parse_uint16(p);
++
++        if (!len) {
++            return NGX_ERROR;
++        }
++
++        *p = '\0';
++
++        p += 2;
++
++        r->header_name_end = p + len;
++        r->lowcase_index = len;
++        r->invalid_header = 0;
++
++        state = sw_name;
++
++        /* fall through */
++
++    case sw_name:
++
++        if (r->header_name_end > end) {
++            break;
++        }
++
++        r->header_name_start = p;
++
++        hash = 0;
++
++        for ( /* void */ ; p != r->header_name_end; p++) {
++
++            ch = *p;
++
++            if ((ch >= 'a' && ch <= 'z')
++                || (ch == '-')
++                || (ch >= '0' && ch <= '9')
++                || (ch == '_' && allow_underscores))
++            {
++                hash = ngx_hash(hash, ch);
++                continue;
++            }
++
++            return NGX_ERROR;
++        }
++
++        r->header_hash = hash;
++
++        state = sw_value_len;
++
++        /* fall through */
++
++    case sw_value_len:
++
++        if (end - p < 2) {
++            break;
++        }
++
++        len = ngx_spdy_frame_parse_uint16(p);
++
++        if (!len) {
++            return NGX_ERROR;
++        }
++
++        *p = '\0';
++
++        p += 2;
++
++        r->header_end = p + len;
++
++        state = sw_value;
++
++        /* fall through */
++
++    case sw_value:
++
++        if (r->header_end > end) {
++            break;
++        }
++
++        r->header_start = p;
++
++        for ( /* void */ ; p != r->header_end; p++) {
++
++            ch = *p;
++
++            if (ch == '\0') {
++
++                if (p == r->header_start) {
++                    return NGX_ERROR;
++                }
++
++                r->header_size = p - r->header_start;
++                r->header_in->pos = p + 1;
++
++                return NGX_OK;
++            }
++
++            if (ch == CR || ch == LF) {
++                return NGX_ERROR;
++            }
++        }
++
++        r->header_size = p - r->header_start;
++        r->header_in->pos = p;
++
++        r->state = 0;
++
++        return NGX_DONE;
++    }
++
++    r->header_in->pos = p;
++    r->state = state;
++
++    return NGX_AGAIN;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_parse_version(ngx_http_request_t *r)
++{
++    u_char  *p, ch;
++
++    if (r->http_protocol.len) {
++        return NGX_ERROR;
++    }
++
++    p = r->header_start;
++
++    if (r->header_size < 8 || !(ngx_str5cmp(p, 'H', 'T', 'T', 'P', '/'))) {
++        return NGX_ERROR;
++    }
++
++    ch = *(p + 5);
++
++    if (ch < '1' || ch > '9') {
++        return NGX_ERROR;
++    }
++
++    r->http_major = ch - '0';
++
++    for (p += 6; p != r->header_end - 2; p++) {
++
++        ch = *p;
++
++        if (ch < '0' || ch > '9') {
++            return NGX_ERROR;
++        }
++
++        r->http_major = r->http_major * 10 + ch - '0';
++    }
++
++    if (*p != '.') {
++        return NGX_ERROR;
++    }
++
++    ch = *(p + 1);
++
++    if (ch < '0' || ch > '9') {
++        return NGX_ERROR;
++    }
++
++    r->http_minor = ch - '0';
++
++    for (p += 2; p != r->header_end; p++) {
++
++        ch = *p;
++
++        if (ch < '0' || ch > '9') {
++            return NGX_ERROR;
++        }
++
++        r->http_minor = r->http_minor * 10 + ch - '0';
++    }
++
++    r->http_protocol.len = r->header_size;
++    r->http_protocol.data = r->header_start;
++    r->http_version = r->http_major * 1000 + r->http_minor;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_parse_method(ngx_http_request_t *r)
++{
++    u_char                       *p, *m;
++    size_t                        k, len;
++    ngx_uint_t                    n;
++    ngx_http_spdy_method_test_t  *test;
++
++    /*
++     * This array takes less than 256 sequential bytes,
++     * and if typical CPU cache line size is 64 bytes,
++     * it is prefetched for 4 load operations.
++     */
++    static ngx_http_spdy_method_test_t  tests[]  ngx_aligned(64) = {
++        { 3, "GET",       NGX_HTTP_GET },
++        { 4, "POST",      NGX_HTTP_POST },
++        { 4, "HEAD",      NGX_HTTP_HEAD },
++        { 7, "OPTIONS",   NGX_HTTP_OPTIONS },
++        { 8, "PROPFIND",  NGX_HTTP_PROPFIND },
++        { 3, "PUT",       NGX_HTTP_PUT },
++        { 5, "MKCOL",     NGX_HTTP_MKCOL },
++        { 6, "DELETE",    NGX_HTTP_DELETE },
++        { 4, "COPY",      NGX_HTTP_COPY },
++        { 4, "MOVE",      NGX_HTTP_MOVE },
++        { 9, "PROPPATCH", NGX_HTTP_PROPPATCH },
++        { 4, "LOCK",      NGX_HTTP_LOCK },
++        { 6, "UNLOCK",    NGX_HTTP_UNLOCK },
++        { 5, "PATCH",     NGX_HTTP_PATCH },
++        { 5, "TRACE",     NGX_HTTP_TRACE }
++    };
++
++    if (r->method_name.len) {
++        return NGX_ERROR;
++    }
++
++    len = r->header_size;
++
++    r->method_name.len = len;
++    r->method_name.data = r->header_start;
++
++    test = tests;
++    n = sizeof(tests) / sizeof(ngx_http_spdy_method_test_t);
++
++    do {
++        if (len == test->len) {
++            p = r->method_name.data;
++            m = test->method;
++            k = len;
++
++            do {
++                if (*p++ != *m++) {
++                    goto next;
++                }
++            } while (--k);
++
++            r->method = test->value;
++            return NGX_OK;
++        }
++
++    next:
++        test++;
++
++    } while (--n);
++
++    return NGX_ERROR;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_parse_uri(ngx_http_request_t *r)
++{
++    ngx_http_core_srv_conf_t  *cscf;
++
++    if (r->unparsed_uri.len) {
++        return NGX_ERROR;
++    }
++
++    r->uri_start = r->header_start;
++    r->uri_end = r->header_end;
++
++    if (ngx_http_parse_uri(r) != NGX_OK) {
++        return NGX_ERROR;
++    }
++
++    if (r->args_start) {
++        r->uri.len = r->args_start - 1 - r->uri_start;
++    } else {
++        r->uri.len = r->header_size;
++    }
++
++    if (r->complex_uri || r->quoted_uri) {
++
++        r->uri.data = ngx_pnalloc(r->pool, r->uri.len + 1);
++        if (r->uri.data == NULL) {
++            return NGX_ERROR;
++        }
++
++        cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
++
++        if (ngx_http_parse_complex_uri(r, cscf->merge_slashes) != NGX_OK) {
++            return NGX_ERROR;
++        }
++
++    } else {
++        r->uri.data = r->uri_start;
++    }
++
++    r->unparsed_uri.len = r->header_size;
++    r->unparsed_uri.data = r->uri_start;
++
++    r->valid_unparsed_uri = r->space_in_uri ? 0 : 1;
++
++    if (r->uri_ext) {
++        if (r->args_start) {
++            r->exten.len = r->args_start - 1 - r->uri_ext;
++        } else {
++            r->exten.len = r->uri_end - r->uri_ext;
++        }
++
++        r->exten.data = r->uri_ext;
++    }
++
++    if (r->args_start && r->uri_end > r->args_start) {
++        r->args.len = r->uri_end - r->args_start;
++        r->args.data = r->args_start;
++    }
++
++#if (NGX_WIN32)
++    {
++    u_char  *p, *last;
++
++    p = r->uri.data;
++    last = r->uri.data + r->uri.len;
++
++    while (p < last) {
++
++        if (*p++ == ':') {
++
++            /*
++             * this check covers "::$data", "::$index_allocation" and
++             * ":$i30:$index_allocation"
++             */
++
++            if (p < last && *p == '$') {
++                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
++                              "client sent unsafe win32 URI");
++                return NGX_ERROR; //FIXME
++            }
++        }
++    }
++
++    p = r->uri.data + r->uri.len - 1;
++
++    while (p > r->uri.data) {
++
++        if (*p == ' ') {
++            p--;
++            continue;
++        }
++
++        if (*p == '.') {
++            p--;
++            continue;
++        }
++
++        break;
++    }
++
++    if (p != r->uri.data + r->uri.len - 1) {
++        r->uri.len = p + 1 - r->uri.data;
++        ngx_http_set_exten(r);
++    }
++
++    }
++#endif
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_construct_request_line(ngx_http_request_t *r)
++{
++    u_char  *p;
++
++    if (r->method_name.len == 0
++        || r->unparsed_uri.len == 0
++        || r->http_protocol.len == 0)
++    {
++        return NGX_ERROR;
++    }
++
++    r->request_line.len = r->method_name.len + 1
++                          + r->unparsed_uri.len + 1
++                          + r->http_protocol.len;
++
++    p = ngx_pnalloc(r->pool, r->request_line.len + 1);
++    if (p == NULL) {
++        return NGX_ERROR;
++    }
++
++    r->request_line.data = p;
++
++    p = ngx_cpymem(p, r->method_name.data, r->method_name.len);
++
++    *p++ = ' ';
++
++    p = ngx_cpymem(p, r->unparsed_uri.data, r->unparsed_uri.len);
++
++    *p++ = ' ';
++
++    ngx_memcpy(p, r->http_protocol.data, r->http_protocol.len + 1);
++
++    /* Some modules expect the space character after method name */
++    r->method_name.data = r->request_line.data;
++
++    return NGX_OK;
++}
++
++
++static ngx_http_spdy_frame_chain_t *
++ngx_http_spdy_alloc_ctrl_frame(ngx_http_spdy_connection_t *sc)
++{
++    ngx_pool_t                   *pool;
++    ngx_chain_t                  *cl;
++    ngx_http_spdy_frame_chain_t  *frame;
++
++    frame = sc->free_ctrl_frames;
++
++    if (frame) {
++        sc->free_ctrl_frames = frame->next;
++
++        cl = frame->first;
++        cl->buf->pos = cl->buf->start;
++        cl->next = NULL;
++
++        return frame;
++    }
++
++    pool = sc->connection->pool;
++
++    frame = ngx_palloc(pool, sizeof(ngx_http_spdy_frame_chain_t));
++    if (frame == NULL) {
++        return NULL;
++    }
++
++    cl = ngx_alloc_chain_link(pool);
++    if (cl == NULL) {
++        return NULL;
++    }
++
++    cl->buf = ngx_create_temp_buf(pool, NGX_SPDY_CTRL_FRAME_BUFFER_SIZE);
++    if (cl->buf == NULL) {
++        return NULL;
++    }
++
++    cl->buf->last_buf = 1;
++    cl->next = NULL;
++
++    frame->first = cl;
++    frame->last = cl;
++    frame->request = NULL;
++
++    return frame;
++}
++
++
++void
++ngx_http_spdy_append_frame(ngx_http_spdy_connection_t *sc,
++    ngx_http_spdy_frame_chain_t *frame)
++{
++    ngx_http_spdy_frame_chain_t  *lf;
++
++    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy append frame %p s:%z r:%p",
++                   frame, frame->size, frame->request);
++
++    frame->next = NULL;
++
++    lf = sc->out_frames;
++
++    if (lf == NULL) {
++        sc->out_frames = frame;
++        sc->out = frame->first;
++        return;
++    }
++
++    for ( /* void */ ; lf->next; lf = lf->next);
++
++    lf->next = frame;
++    lf->last->next = frame->first;
++}
++
++
++static void
++ngx_http_spdy_prepend_frame(ngx_http_spdy_connection_t *sc,
++    ngx_http_spdy_frame_chain_t *frame)
++{
++    ngx_http_spdy_frame_chain_t  *ff;
++
++    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy prepend frame %p s:%z r:%p",
++                   frame, frame->size, frame->request);
++
++    ff = sc->out_frames;
++
++    if (ff == NULL) {
++        sc->out_frames = frame;
++        sc->out = frame->first;
++
++        frame->next = NULL;
++
++        return;
++    }
++
++    if (sc->out_incomplete) {
++        frame->next = ff->next;
++        frame->last->next = ff->last->next;
++
++        ff->next = frame;
++        ff->last->next = frame->first;
++
++        return;
++    }
++
++    sc->out_frames = frame;
++    sc->out = frame->first;
++
++    frame->next = ff;
++    frame->last->next = ff->first;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_send_rst_stream(ngx_http_spdy_connection_t *sc, ngx_uint_t sid,
++    ngx_uint_t status)
++{
++    u_char                       *p;
++    ngx_buf_t                    *buf;
++    ngx_http_spdy_frame_chain_t  *frame;
++
++    static u_char rst_stream_header[] = { 0x80, 0x02, 0x00, 0x03,
++                                          0x00, 0x00, 0x00, 0x08 };
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy write RST_STREAM sid:%ui st:%ui", sid, status);
++
++    frame = ngx_http_spdy_alloc_ctrl_frame(sc);
++    if (frame == NULL) {
++        return NGX_ERROR;
++    }
++
++    frame->size = 16;
++
++    buf = frame->first->buf;
++
++    p = buf->start;
++    p = ngx_cpymem(p, rst_stream_header, 8);
++
++    p = ngx_spdy_frame_write_uint32(p, sid);
++    p = ngx_spdy_frame_write_uint32(p, status);
++
++    buf->last = p;
++
++    ngx_http_spdy_append_frame(sc, frame);
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_spdy_send_settings(ngx_http_spdy_connection_t *sc)
++{
++    u_char                       *p;
++    ngx_buf_t                    *buf;
++    ngx_pool_t                   *pool;
++    ngx_chain_t                  *cl;
++    ngx_http_spdy_srv_conf_t     *sscf;
++    ngx_http_spdy_frame_chain_t  *frame;
++
++    static u_char settings_header[] = { 0x80, 0x02, 0x00, 0x04,
++                                        0x01, 0x00, 0x00, 0x0c };
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, sc->connection->log, 0,
++                   "spdy write SETTINGS frame");
++
++    pool = sc->connection->pool;
++
++    frame = ngx_palloc(pool, sizeof(ngx_http_spdy_frame_chain_t));
++    if (frame == NULL) {
++        return NGX_ERROR;
++    }
++
++    cl = ngx_alloc_chain_link(pool);
++    if (cl == NULL) {
++        return NGX_ERROR;
++    }
++
++    buf = ngx_create_temp_buf(pool, 20);
++    if (buf == NULL) {
++        return NGX_ERROR;
++    }
++
++    buf->last_buf = 1;
++
++    cl->buf = buf;
++    cl->next = NULL;
++
++    frame->size = 20;
++    frame->first = cl;
++    frame->last = cl;
++    frame->request = NULL;
++
++    p = buf->pos;
++
++    p = ngx_cpymem(p, settings_header, 8);
++    p = ngx_spdy_frame_write_uint32(p, 1);
++
++    *p++ = 0x04;
++    *p++ = 0x00;
++    *p++ = 0x00;
++    *p++ = 0x01; //persistant
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++
++    buf->last = ngx_spdy_frame_write_uint32(p, sscf->concurrent_streams);
++
++    ngx_http_spdy_prepend_frame(sc, frame);
++
++    return NGX_OK;
++}
++
++
++static void
++ngx_http_spdy_writer(ngx_http_request_t *r)
++{
++    ngx_int_t  rc;
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy writer handler: \"%V?%V\"", &r->uri, &r->args);
++
++    rc = ngx_http_output_filter(r, NULL);
++
++    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy writer output filter: %d, \"%V?%V\"",
++                   rc, &r->uri, &r->args);
++
++    if (rc == NGX_ERROR) {
++        ngx_http_spdy_finalize_request(r, rc);
++        return;
++    }
++
++    if (r->buffered || r->postponed
++        || (r == r->main && r->connection->buffered))
++    {
++        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "SPDY DEBUG: %i %i", r->buffered, r->postponed);
++        return;
++    }
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy writer done: \"%V?%V\"", &r->uri, &r->args);
++
++    r->write_event_handler = ngx_http_request_empty_handler;
++
++    ngx_http_spdy_finalize_request(r, rc);
++}
++
++
++static u_char *
++ngx_http_spdy_log_error_handler(ngx_http_request_t *r, ngx_http_request_t *sr,
++    u_char *buf, size_t len)
++{
++    char                      *uri_separator;
++    u_char                    *p;
++    ngx_http_upstream_t       *u;
++    ngx_http_core_srv_conf_t  *cscf;
++
++    cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
++
++    p = ngx_snprintf(buf, len, ", server: %V", &cscf->server_name);
++    len -= p - buf;
++    buf = p;
++
++    if (r->request_line.data == NULL && r->request_start) {
++        for (p = r->request_start; p < r->header_in->last; p++) {
++            if (*p == CR || *p == LF) {
++                break;
++            }
++        }
++
++        r->request_line.len = p - r->request_start;
++        r->request_line.data = r->request_start;
++    }
++
++    if (r->request_line.len) {
++        p = ngx_snprintf(buf, len, ", request: \"%V\"", &r->request_line);
++        len -= p - buf;
++        buf = p;
++    }
++
++    if (r != sr) {
++        p = ngx_snprintf(buf, len, ", subrequest: \"%V\"", &sr->uri);
++        len -= p - buf;
++        buf = p;
++    }
++
++    u = sr->upstream;
++
++    if (u && u->peer.name) {
++
++        uri_separator = "";
++
++#if (NGX_HAVE_UNIX_DOMAIN)
++        if (u->peer.sockaddr && u->peer.sockaddr->sa_family == AF_UNIX) {
++            uri_separator = ":";
++        }
++#endif
++
++        p = ngx_snprintf(buf, len, ", upstream: \"%V%V%s%V\"",
++                         &u->schema, u->peer.name,
++                         uri_separator, &u->uri);
++        len -= p - buf;
++        buf = p;
++    }
++
++    if (r->headers_in.host) {
++        p = ngx_snprintf(buf, len, ", host: \"%V\"",
++                         &r->headers_in.host->value);
++        len -= p - buf;
++        buf = p;
++    }
++
++    if (r->headers_in.referer) {
++        p = ngx_snprintf(buf, len, ", referrer: \"%V\"",
++                         &r->headers_in.referer->value);
++        buf = p;
++    }
++
++    return buf;
++}
++
++
++void
++ngx_http_spdy_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
++{
++    ngx_connection_t          *c;
++    ngx_http_request_t        *mr, *pr;
++    ngx_http_core_loc_conf_t  *clcf;
++
++    c = r->connection;
++    mr = r->main;
++
++    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "spdy finalize request: %d, \"%V?%V\" a:%d, c:%d",
++                   rc, &r->uri, &r->args, r == c->data, mr->count);
++
++    if (rc == NGX_DONE) {
++        ngx_http_spdy_close_request(r, rc);
++        return;
++    }
++
++    if (rc == NGX_OK && r->filter_finalize) {
++        c->error = 1;
++    }
++
++    if (rc == NGX_DECLINED) {
++        r->content_handler = NULL;
++        r->write_event_handler = ngx_http_core_run_phases;
++        ngx_http_core_run_phases(r);
++        return;
++    }
++
++    if (r != mr && r->post_subrequest) {
++        rc = r->post_subrequest->handler(r, r->post_subrequest->data, rc);
++    }
++
++    if (rc == NGX_ERROR
++        || rc == NGX_HTTP_REQUEST_TIME_OUT
++        || rc == NGX_HTTP_CLIENT_CLOSED_REQUEST
++        || c->error)
++    {
++        if (mr->blocked) {
++            r->write_event_handler = ngx_http_spdy_request_finalizer;
++        }
++
++        ngx_http_spdy_terminate_request(r, rc); //FIXME internal error
++        return;
++    }
++
++    if (rc >= NGX_HTTP_SPECIAL_RESPONSE
++        || rc == NGX_HTTP_CREATED
++        || rc == NGX_HTTP_NO_CONTENT)
++    {
++        if (rc == NGX_HTTP_CLOSE) {
++            ngx_http_spdy_terminate_request(r, rc); //FIXME finalize connection
++            return;
++        }
++
++        ngx_http_spdy_finalize_request(r,
++                                     ngx_http_special_response_handler(r, rc));
++        return;
++    }
++
++    if (r != mr) {
++
++        if (r->buffered || r->postponed) {
++
++            r->http_state = NGX_HTTP_WRITING_REQUEST_STATE;
++            r->write_event_handler = ngx_http_spdy_writer;
++
++            return;
++        }
++
++        pr = r->parent;
++
++        if (r == c->data) {
++
++            mr->count--;
++            mr->subrequests++;
++
++            if (!r->logged) {
++
++                clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
++
++                if (clcf->log_subrequest) {
++                    ngx_http_log_request(r);
++                }
++
++                r->logged = 1;
++
++            } else {
++                ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                              "subrequest: \"%V?%V\" logged again",
++                              &r->uri, &r->args);
++            }
++
++            r->done = 1;
++
++            if (pr->postponed && pr->postponed->request == r) {
++                pr->postponed = pr->postponed->next;
++            }
++
++            c->data = pr;
++
++        } else {
++
++            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                           "spdy finalize non-active request: \"%V?%V\"",
++                           &r->uri, &r->args);
++
++            r->write_event_handler = ngx_http_spdy_request_finalizer;
++
++            if (r->waited) {
++                r->done = 1;
++            }
++        }
++
++        if (ngx_http_post_request(pr, NULL) != NGX_OK) {
++            mr->count++;
++            ngx_http_spdy_terminate_request(r, 0); //FIXME internal error
++            return;
++        }
++
++        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                       "spdy wake parent request: \"%V?%V\"",
++                       &pr->uri, &pr->args);
++
++        return;
++    }
++
++    if (r->buffered || c->buffered || r->postponed || r->blocked) {
++
++        r->http_state = NGX_HTTP_WRITING_REQUEST_STATE;
++        r->write_event_handler = ngx_http_spdy_writer;
++
++        return;
++    }
++
++    if (r != c->data) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "spdy finalize non-active request: \"%V?%V\"",
++                      &r->uri, &r->args);
++        return;
++    }
++
++    r->done = 1;
++    r->request_complete = 1;
++
++    r->write_event_handler = ngx_http_request_empty_handler;
++
++    ngx_http_spdy_close_request(r, 0);
++}
++
++
++static void
++ngx_http_spdy_request_finalizer(ngx_http_request_t *r)
++{
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy finalizer done: \"%V?%V\"", &r->uri, &r->args);
++
++    ngx_http_spdy_finalize_request(r, 0);
++}
++
++
++static void
++ngx_http_spdy_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
++{
++    ngx_chain_t                 **ln;
++    ngx_http_cleanup_t           *cln;
++    ngx_http_ephemeral_t         *e;
++    ngx_http_spdy_connection_t   *sc;
++    ngx_http_spdy_frame_chain_t  *frame, **fn;
++
++    r = r->main;
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy terminate request count:%d", r->count);
++
++    if (rc > 0 && r->headers_out.status == 0) {
++        r->headers_out.status = rc;
++    }
++
++    cln = r->cleanup;
++    r->cleanup = NULL;
++
++    while (cln) {
++        if (cln->handler) {
++            cln->handler(cln->data);
++        }
++
++        cln = cln->next;
++    }
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy terminate cleanup count:%d blk:%d",
++                   r->count, r->blocked);
++
++    if (r->write_event_handler) {
++
++        sc = r->spdy_stream->connection;
++
++        frame = sc->out_frames;
++
++        if (sc->out_incomplete) {
++            ln = &frame->last->next;
++            fn = &frame->next;
++            frame = *fn;
++
++        } else {
++            ln = &sc->out;
++            fn = &sc->out_frames;
++        }
++
++        for ( /* void */ ; frame; frame = *fn) {
++            if (frame->request == r) {
++                *ln = frame->last->next;
++                *fn = frame->next;
++                continue;
++            }
++
++            ln = &frame->last->next;
++            fn = &frame->next;
++        }
++
++        if (r->blocked) {
++            return;
++        }
++
++        r->posted_requests = NULL;
++        r->write_event_handler = ngx_http_spdy_terminate_handler;
++
++        if (sc->out_incomplete && sc->out_frames->request == r) {
++            return;
++        }
++
++        e = ngx_http_ephemeral(r);
++        (void) ngx_http_post_request(r, &e->terminal_posted_request);
++        return;
++    }
++
++    ngx_http_spdy_close_request(r, rc);
++}
++
++
++static void
++ngx_http_spdy_terminate_handler(ngx_http_request_t *r)
++{
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy terminate handler count:%d", r->count);
++
++    r->count = 1;
++
++    ngx_http_spdy_close_request(r, 0);
++}
++
++
++static void
++ngx_http_spdy_close_request(ngx_http_request_t *r, ngx_int_t rc)
++{
++    ngx_http_spdy_connection_t  *sc;
++
++    r = r->main;
++
++    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "spdy request count:%d blk:%d", r->count, r->blocked);
++
++    if (r->count == 0) {
++        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
++                      "spdy request count is zero");
++    }
++
++    r->count--;
++
++    if (r->count || r->blocked) {
++        return;
++    }
++
++    sc = r->spdy_stream->connection;
++    sc->processing--;
++
++    ngx_http_spdy_free_request(r, rc);
++
++    if (sc->processing || sc->active) {
++        return;
++    }
++
++    ngx_http_spdy_handle_connection(sc);
++}
++
++
++static void
++ngx_http_spdy_free_request(ngx_http_request_t *r, ngx_int_t rc)
++{
++    ngx_connection_t            *fc;
++    ngx_http_cleanup_t          *cln;
++    ngx_http_spdy_connection_t  *sc;
++
++    fc = r->connection;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, fc->log, 0, "spdy free request");
++
++    for (cln = r->cleanup; cln; cln = cln->next) {
++        if (cln->handler) {
++            cln->handler(cln->data);
++        }
++    }
++
++    sc = r->main->spdy_stream->connection;
++
++#if (NGX_STAT_STUB)
++
++    if (r->stat_reading) {
++        (void) ngx_atomic_fetch_add(ngx_stat_reading, -1);
++    }
++
++    if (r->stat_writing) {
++        (void) ngx_atomic_fetch_add(ngx_stat_writing, -1);
++    }
++
++    if (sc->processing) {
++        (void) ngx_atomic_fetch_add(ngx_stat_active, -1);
++    }
++
++#endif
++
++    if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {
++        r->headers_out.status = rc;
++    }
++
++    fc->log->action = "logging request";
++
++    ngx_http_log_request(r);
++
++    fc->log->action = "closing request";
++
++    r->connection->destroyed = 1;
++
++    fc->data = sc->fake_connections;
++    sc->fake_connections = fc;
++ 
++    ngx_destroy_pool(r->pool);
++}
++
++
++static void
++ngx_http_spdy_handle_connection(ngx_http_spdy_connection_t *sc)
++{
++    ngx_connection_t          *c;
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    c = sc->connection;
++
++    if (c->error) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++    if (sc->waiting) {
++        ngx_add_timer(c->read, sscf->recv_timeout);
++        return;
++    }
++
++    if (ngx_terminate || ngx_exiting) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++#if (NGX_HTTP_SSL)
++    if (c->ssl) {
++        ngx_ssl_free_buffer(c);
++    }
++#endif
++
++    c->destroyed = 1;
++    c->idle = 1;
++    ngx_reusable_connection(c, 1);
++
++    c->read->handler = ngx_http_spdy_keepalive_handler;
++
++    ngx_add_timer(c->read, sscf->keepalive_timeout);
++}
++
++
++static void
++ngx_http_spdy_keepalive_handler(ngx_event_t *rev)
++{
++    ngx_connection_t  *c;
++
++    c = rev->data;
++
++    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "spdy keepalive handler");
++
++    if (rev->timedout || c->close) {
++        ngx_http_spdy_close_connection(c);
++        return;
++    }
++
++#if (NGX_HAVE_KQUEUE)
++
++    if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
++        if (rev->pending_eof) {
++            c->log->handler = NULL;
++            ngx_log_error(NGX_LOG_INFO, c->log, rev->kq_errno,
++                          "kevent() reported that client %V closed "
++                          "keepalive connection", &c->addr_text);
++#if (NGX_HTTP_SSL)
++            if (c->ssl) {
++                c->ssl->no_send_shutdown = 1;
++            }
++#endif
++            ngx_http_spdy_close_connection(c);
++            return;
++        }
++    }
++
++#endif
++
++    c->destroyed = 0;
++    c->idle = 0;
++    ngx_reusable_connection(c, 0);
++
++    rev->handler = ngx_http_spdy_read_handler;
++    ngx_http_spdy_read_handler(rev);
++}
++
++
++static void
++ngx_http_spdy_finalize_connection(ngx_http_spdy_connection_t *sc,
++    ngx_int_t rc)
++{
++    ngx_uint_t                 i, size;
++    ngx_connection_t          *fc;
++    ngx_http_request_t        *r;
++    ngx_http_spdy_stream_t    *stream;
++    ngx_http_spdy_srv_conf_t  *sscf;
++
++    if (!sc->processing) {
++        ngx_http_spdy_close_connection(sc->connection);
++        return;
++    }
++
++    sc->connection->error = 1;
++
++    sc->out = NULL;
++    sc->out_frames = NULL;
++    sc->out_incomplete = 0;
++
++    sscf = ngx_http_get_module_srv_conf(sc->default_request,
++                                        ngx_http_spdy_module);
++
++    size = ngx_http_spdy_streams_index_size(sscf);
++
++    for (i = 0; i < size; i++) {
++        stream = sc->streams_index[i];
++
++        while (stream) {
++            r = stream->request;
++            fc = r->connection;
++            fc->error = 1;
++            r->main->count++;
++            ngx_http_spdy_finalize_request(r, rc);
++            ngx_http_run_posted_requests(fc);
++            stream = stream->index;
++        }
++    }
++}
++
++
++static void
++ngx_http_spdy_close_connection(ngx_connection_t *c)
++{
++    ngx_pool_t  *pool;
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "close spdy connection: %d", c->fd);
++
++#if (NGX_HTTP_SSL)
++
++    if (c->ssl) {
++        if (ngx_ssl_shutdown(c) == NGX_AGAIN) {
++            c->ssl->handler = ngx_http_spdy_close_connection;
++            return;
++        }
++    }
++
++#endif
++
++#if (NGX_STAT_STUB)
++    (void) ngx_atomic_fetch_add(ngx_stat_active, -1);
++#endif
++
++    c->destroyed = 1;
++
++    pool = c->pool;
++
++    ngx_close_connection(c);
++
++    ngx_destroy_pool(pool);
++}
+Index: src/http/ngx_http.c
+===================================================================
+--- src/http/ngx_http.c	(revision 4681)
++++ src/http/ngx_http.c	(working copy)
+@@ -1307,6 +1307,9 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_co
+ #if (NGX_HTTP_SSL)
+         addr[i].opt.ssl = ssl;
+ #endif
++#if (NGX_HTTP_SPDY)
++        addr[i].opt.spdy = lsopt->spdy;
++#endif
+ 
+         return NGX_OK;
+     }
+@@ -1815,6 +1818,9 @@ ngx_http_add_addrs(ngx_conf_t *cf, ngx_http_port_t
+ #if (NGX_HTTP_SSL)
+         addrs[i].conf.ssl = addr[i].opt.ssl;
+ #endif
++#if (NGX_HTTP_SPDY)
++        addrs[i].conf.spdy = addr[i].opt.spdy;
++#endif
+ 
+         if (addr[i].hash.buckets == NULL
+             && (addr[i].wc_head == NULL
+@@ -1876,6 +1882,9 @@ ngx_http_add_addrs6(ngx_conf_t *cf, ngx_http_port_
+ #if (NGX_HTTP_SSL)
+         addrs6[i].conf.ssl = addr[i].opt.ssl;
+ #endif
++#if (NGX_HTTP_SPDY)
++        addrs6[i].conf.spdy = addr[i].opt.spdy;
++#endif
+ 
+         if (addr[i].hash.buckets == NULL
+             && (addr[i].wc_head == NULL
+Index: src/event/ngx_event_openssl.c
+===================================================================
+--- src/event/ngx_event_openssl.c	(revision 4681)
++++ src/event/ngx_event_openssl.c	(working copy)
+@@ -530,8 +530,6 @@ ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_conn
+         return NGX_ERROR;
+     }
+ 
+-    sc->buffer = ((flags & NGX_SSL_BUFFER) != 0);
+-
+     sc->connection = SSL_new(ssl->ctx);
+ 
+     if (sc->connection == NULL) {
+@@ -544,6 +542,13 @@ ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_conn
+         return NGX_ERROR;
+     }
+ 
++    if (flags & NGX_SSL_BUFFER) {
++        sc->buffer = 1;
++
++    } else {
++        SSL_set_mode(sc->connection, SSL_MODE_ENABLE_PARTIAL_WRITE);
++    }
++
+     if (flags & NGX_SSL_CLIENT) {
+         SSL_set_connect_state(sc->connection);
+ 
+@@ -650,7 +655,8 @@ ngx_ssl_handshake(ngx_connection_t *c)
+         c->recv = ngx_ssl_recv;
+         c->send = ngx_ssl_write;
+         c->recv_chain = ngx_ssl_recv_chain;
+-        c->send_chain = ngx_ssl_send_chain;
++        c->send_chain = c->ssl->buffer ? ngx_ssl_send_chain
++                                       : ngx_ssl_send_chain_unbuffered;
+ 
+         /* initial handshake done, disable renegotiation (CVE-2009-3555) */
+         if (c->ssl->connection->s3) {
+@@ -970,75 +976,33 @@ ngx_ssl_write_handler(ngx_event_t *wev)
+ ngx_chain_t *
+ ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
+ {
+-    int          n;
+-    ngx_uint_t   flush;
+-    ssize_t      send, size;
+-    ngx_buf_t   *buf;
++    int                    n;
++    ssize_t                size, send, used;
++    ngx_uint_t             flush;
++    ngx_ssl_connection_t  *sc;
+ 
+-    if (!c->ssl->buffer) {
+-
+-        while (in) {
+-            if (ngx_buf_special(in->buf)) {
+-                in = in->next;
+-                continue;
+-            }
+-
+-            n = ngx_ssl_write(c, in->buf->pos, in->buf->last - in->buf->pos);
+-
+-            if (n == NGX_ERROR) {
+-                return NGX_CHAIN_ERROR;
+-            }
+-
+-            if (n == NGX_AGAIN) {
+-                return in;
+-            }
+-
+-            in->buf->pos += n;
+-            c->sent += n;
+-
+-            if (in->buf->pos == in->buf->last) {
+-                in = in->next;
+-            }
+-        }
+-
+-        return in;
+-    }
+-
+-
+     /* the maximum limit size is the maximum int32_t value - the page size */
+ 
+     if (limit == 0 || limit > (off_t) (NGX_MAX_INT32_VALUE - ngx_pagesize)) {
+         limit = NGX_MAX_INT32_VALUE - ngx_pagesize;
+     }
+ 
+-    buf = c->ssl->buf;
++    sc = c->ssl;
+ 
+-    if (buf == NULL) {
+-        buf = ngx_create_temp_buf(c->pool, NGX_SSL_BUFSIZE);
+-        if (buf == NULL) {
++    if (sc->buf == NULL) {
++        sc->buf = ngx_palloc(c->pool, NGX_SSL_BUFSIZE);
++        if (sc->buf == NULL) {
+             return NGX_CHAIN_ERROR;
+         }
+-
+-        c->ssl->buf = buf;
+     }
+ 
+-    if (buf->start == NULL) {
+-        buf->start = ngx_palloc(c->pool, NGX_SSL_BUFSIZE);
+-        if (buf->start == NULL) {
+-            return NGX_CHAIN_ERROR;
+-        }
+-
+-        buf->pos = buf->start;
+-        buf->last = buf->start;
+-        buf->end = buf->start + NGX_SSL_BUFSIZE;
+-    }
+-
++    used = sc->buf_used;
+     send = 0;
+     flush = (in == NULL) ? 1 : 0;
+ 
+     for ( ;; ) {
+ 
+-        while (in && buf->last < buf->end && send < limit) {
++        while (in && used != NGX_SSL_BUFSIZE && send < limit) {
+             if (in->buf->last_buf || in->buf->flush) {
+                 flush = 1;
+             }
+@@ -1050,8 +1014,8 @@ ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_
+ 
+             size = in->buf->last - in->buf->pos;
+ 
+-            if (size > buf->end - buf->last) {
+-                size = buf->end - buf->last;
++            if (size > NGX_SSL_BUFSIZE - used) {
++                size = NGX_SSL_BUFSIZE - used;
+             }
+ 
+             if (send + size > limit) {
+@@ -1062,10 +1026,10 @@ ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_
+             ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                            "SSL buf copy: %d", size);
+ 
+-            ngx_memcpy(buf->last, in->buf->pos, size);
++            ngx_memcpy(sc->buf + used, in->buf->pos, size);
+ 
+-            buf->last += size;
+             in->buf->pos += size;
++            used += size;
+             send += size;
+ 
+             if (in->buf->pos == in->buf->last) {
+@@ -1073,51 +1037,74 @@ ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_
+             }
+         }
+ 
+-        size = buf->last - buf->pos;
+-
+-        if (!flush && buf->last < buf->end && c->ssl->buffer) {
++        if (!flush && used != NGX_SSL_BUFSIZE) {
+             break;
+         }
+ 
+-        n = ngx_ssl_write(c, buf->pos, size);
++        n = ngx_ssl_write(c, sc->buf, used);
+ 
+         if (n == NGX_ERROR) {
+             return NGX_CHAIN_ERROR;
+         }
+ 
+         if (n == NGX_AGAIN) {
+-            c->buffered |= NGX_SSL_BUFFERED;
+-            return in;
++            break;
+         }
+ 
+-        buf->pos += n;
+         c->sent += n;
++        used = 0;
+ 
+-        if (n < size) {
+-            break;
+-        }
+-
+-        if (buf->pos == buf->last) {
+-            buf->pos = buf->start;
+-            buf->last = buf->start;
+-        }
+-
+         if (in == NULL || send == limit) {
+             break;
+         }
+     }
+ 
+-    if (buf->pos < buf->last) {
++    if (used) {
+         c->buffered |= NGX_SSL_BUFFERED;
+ 
+     } else {
+         c->buffered &= ~NGX_SSL_BUFFERED;
+     }
+ 
++    sc->buf_used = used;
++
+     return in;
+ }
+ 
+ 
++ngx_chain_t *
++ngx_ssl_send_chain_unbuffered(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
++{
++    int  n;
++
++    while (in) {
++        if (ngx_buf_special(in->buf)) {
++            in = in->next;
++            continue;
++        }
++
++        n = ngx_ssl_write(c, in->buf->pos, in->buf->last - in->buf->pos);
++
++        if (n == NGX_ERROR) {
++            return NGX_CHAIN_ERROR;
++        }
++
++        if (n == NGX_AGAIN) {
++            return in;
++        }
++
++        in->buf->pos += n;
++        c->sent += n;
++
++        if (in->buf->pos == in->buf->last) {
++            in = in->next;
++        }
++    }
++
++    return in;
++}
++
++
+ ssize_t
+ ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size)
+ {
+@@ -1209,9 +1196,9 @@ ngx_ssl_read_handler(ngx_event_t *rev)
+ void
+ ngx_ssl_free_buffer(ngx_connection_t *c)
+ {
+-    if (c->ssl->buf && c->ssl->buf->start) {
+-        if (ngx_pfree(c->pool, c->ssl->buf->start) == NGX_OK) {
+-            c->ssl->buf->start = NULL;
++    if (c->ssl->buf) {
++        if (ngx_pfree(c->pool, c->ssl->buf) == NGX_OK) {
++            c->ssl->buf = NULL;
+         }
+     }
+ }
+Index: src/event/ngx_event_openssl.h
+===================================================================
+--- src/event/ngx_event_openssl.h	(revision 4681)
++++ src/event/ngx_event_openssl.h	(working copy)
+@@ -35,7 +35,8 @@ typedef struct {
+     ngx_ssl_conn_t             *connection;
+ 
+     ngx_int_t                   last;
+-    ngx_buf_t                  *buf;
++    u_char                     *buf;
++    size_t                      buf_used;
+ 
+     ngx_connection_handler_pt   handler;
+ 
+@@ -147,6 +148,8 @@ ssize_t ngx_ssl_write(ngx_connection_t *c, u_char
+ ssize_t ngx_ssl_recv_chain(ngx_connection_t *c, ngx_chain_t *cl);
+ ngx_chain_t *ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_t *in,
+     off_t limit);
++ngx_chain_t *ngx_ssl_send_chain_unbuffered(ngx_connection_t *c, ngx_chain_t *in,
++    off_t limit);
+ void ngx_ssl_free_buffer(ngx_connection_t *c);
+ ngx_int_t ngx_ssl_shutdown(ngx_connection_t *c);
+ void ngx_cdecl ngx_ssl_error(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
+Index: auto/sources
+===================================================================
+--- auto/sources	(revision 4681)
++++ auto/sources	(working copy)
+@@ -323,6 +323,16 @@ HTTP_POSTPONE_FILTER_SRCS=src/http/ngx_http_postpo
+ HTTP_FILE_CACHE_SRCS=src/http/ngx_http_file_cache.c
+ 
+ 
++HTTP_SPDY_MODULE=ngx_http_spdy_module
++HTTP_SPDY_DEPS="src/http/ngx_http_spdy.h \
++                src/http/ngx_http_spdy_module.h"
++HTTP_SPDY_SRCS="src/http/ngx_http_spdy.c \
++                src/http/ngx_http_spdy_module.c \
++                src/http/ngx_http_spdy_filter_module.c"
++
++HTTP_SPDY_FILTER_MODULE="ngx_http_spdy_filter_module"
++
++
+ HTTP_CHARSET_FILTER_MODULE=ngx_http_charset_filter_module
+ HTTP_CHARSET_SRCS=src/http/modules/ngx_http_charset_filter_module.c
+ 
+Index: auto/options
+===================================================================
+--- auto/options	(revision 4681)
++++ auto/options	(working copy)
+@@ -60,6 +60,7 @@ HTTP_CACHE=YES
+ HTTP_CHARSET=YES
+ HTTP_GZIP=YES
+ HTTP_SSL=NO
++HTTP_SPDY=YES
+ HTTP_SSI=YES
+ HTTP_POSTPONE=NO
+ HTTP_REALIP=NO
+@@ -217,6 +218,7 @@ do
+ 
+         --without-http_charset_module)   HTTP_CHARSET=NO            ;;
+         --without-http_gzip_module)      HTTP_GZIP=NO               ;;
++        --without-http_spdy_module)      HTTP_SPDY=NO               ;;
+         --without-http_ssi_module)       HTTP_SSI=NO                ;;
+         --without-http_userid_module)    HTTP_USERID=NO             ;;
+         --without-http_access_module)    HTTP_ACCESS=NO             ;;
+Index: auto/modules
+===================================================================
+--- auto/modules	(revision 4681)
++++ auto/modules	(working copy)
+@@ -118,6 +118,7 @@ fi
+ HTTP_FILTER_MODULES="$HTTP_WRITE_FILTER_MODULE \
+                      $HTTP_HEADER_FILTER_MODULE \
+                      $HTTP_CHUNKED_FILTER_MODULE \
++                     $HTTP_SPDY_FILTER_MODULE \
+                      $HTTP_RANGE_HEADER_FILTER_MODULE"
+ 
+ if [ $HTTP_GZIP = YES ]; then
+@@ -171,6 +172,14 @@ if [ $HTTP_USERID = YES ]; then
+     HTTP_SRCS="$HTTP_SRCS $HTTP_USERID_SRCS"
+ fi
+ 
++
++if [ $HTTP_SPDY = YES ]; then
++    have=NGX_HTTP_SPDY . auto/have
++    HTTP_MODULES="$HTTP_MODULES $HTTP_SPDY_MODULE"
++    HTTP_DEPS="$HTTP_DEPS $HTTP_SPDY_DEPS"
++    HTTP_SRCS="$HTTP_SRCS $HTTP_SPDY_SRCS"
++fi
++
+ HTTP_MODULES="$HTTP_MODULES $HTTP_STATIC_MODULE"
+ 
+ if [ $HTTP_GZIP_STATIC = YES ]; then
