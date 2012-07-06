@@ -191,7 +191,7 @@ src_prepare() {
 	# remove useless files
 	sed -i -e '/koi-/d' -e '/win-/d' auto/install || die
 	if use spdy; then
-		epatch "${FILESDIR}/nginx-spdy-39.patch"
+		epatch "${FILESDIR}/nginx-spdy-46.patch"
 	fi
 }
 
